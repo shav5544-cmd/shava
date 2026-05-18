@@ -18,6 +18,7 @@ portfolio_params as
        when nvl(ov."Макс.дни просрочки",0) between 241 and 270 then '241 - 270'
        when nvl(ov."Макс.дни просрочки",0) between 271 and 300 then '271 - 300'
        when nvl(ov."Макс.дни просрочки",0) between 301 and 330 then '301 - 330'
+       when nvl(ov."Макс.дни просрочки",0) between 331 and 360 then '331 - 360'
        when nvl(ov."Макс.дни просрочки",0) >= 361 then '361+'
      end) as days_bucket
   from
