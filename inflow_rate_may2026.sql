@@ -58,7 +58,7 @@ WITH bakt0_raw AS (
         ON  r.arcdate    = DATE '2026-04-30'
         AND r.currencyid = lp.currencyid
 
-    -- ФАҚАТ siteid = 1158 УЧУН JOIN
+    -- ✅ ФАҚАТ siteid = 1158 УЧУН JOIN
     LEFT JOIN datamarts.fact_count_days_overdue f
         ON  f."Код сделки Кредита" = lp.dealid
         AND f."МФО"                = lp.siteid
@@ -75,7 +75,7 @@ WITH bakt0_raw AS (
       AND (lp.commercialloantypeid || '-' || lntp.DESCRIPTION)
                          NOT LIKE '%Реализация залога%'
 
-      -- 1158 → fact_count_days_overdue, ҚОЛГАНЛАР → Loan_Portfolio_Best
+      -- ✅ 1158 → fact_count_days_overdue, ҚОЛГАНЛАР → Loan_Portfolio_Best
       AND CASE
               WHEN lp.siteid = 1158
               THEN NVL(f."Макс.дни просрочки", 0)
@@ -99,13 +99,11 @@ mahraj_total AS (
 first_dpd1 AS (
     /*+ MATERIALIZE */
 
-    -- МФО 1158 → fact_count_days_overdue
+    -- ✅ МФО 1158 → fact_count_days_overdue
     SELECT /*+ USE_HASH(b) */
         b.dealid,
         b.siteid,
-        MIN(f."Дата отчета")        AS first_overdue_date,
-        MIN(f."Макс.дни просрочки") AS surat_overdue_days,
-        'fact_count_days_overdue'   AS surat_source
+        MIN(f."Дата отчета") AS first_overdue_date
     FROM bakt0_start b
     JOIN datamarts.fact_count_days_overdue f
         ON  f."Код сделки Кредита" = b.dealid
@@ -113,18 +111,16 @@ first_dpd1 AS (
         AND f."Дата отчета"        BETWEEN DATE '2026-05-01'
                                        AND DATE '2026-05-31'
         AND f."Макс.дни просрочки" >= 1
-    WHERE b.siteid = 1158
+    WHERE b.siteid = 1158                              -- ✅ ФАҚАТ 1158
     GROUP BY b.dealid, b.siteid
 
     UNION ALL
 
-    -- ҚОЛГАН МФО → Loan_Portfolio_Best
+    -- ✅ ҚОЛГАН МФО → Loan_Portfolio_Best
     SELECT /*+ PARALLEL(lp2, 4) USE_HASH(b) */
         b.dealid,
         b.siteid,
-        MIN(lp2.arcdate)            AS first_overdue_date,
-        MIN(lp2.overdue_days_max)   AS surat_overdue_days,
-        'Loan_Portfolio_Best'       AS surat_source
+        MIN(lp2.arcdate) AS first_overdue_date
     FROM bakt0_start b
     JOIN creator_k.Loan_Portfolio_Best lp2
         ON  lp2.dealid  = b.dealid
@@ -133,7 +129,7 @@ first_dpd1 AS (
                             AND DATE '2026-05-31'
         AND NVL(lp2.overdue_days_max, 0) >= 1
         AND lp2.dealtypeid IN (355, 356)
-    WHERE b.siteid <> 1158
+    WHERE b.siteid <> 1158                             -- ✅ 1158 ДАН ТАШҚАРИ
     GROUP BY b.dealid, b.siteid
 ),
 
@@ -154,9 +150,9 @@ surat AS (
 
         CASE
             WHEN fd.siteid = 1158
-            -- 1158 → LPB ДА КУНЛИК SNAPSHOT ЙЎҚ → 30.04 ОД ИШЛАТ
+            -- ✅ 1158 → LPB ДА КУНЛИК SNAPSHOT ЙЎҚ → 30.04 ОД ИШЛАТ
             THEN b.od_sum_mahraj
-            -- ҚОЛГАН МФО → LPB ДА ШУ КУН БОР
+            -- ✅ ҚОЛГАН МФО → LPB ДА ШУ КУН БОР
             ELSE
                 CASE
                     WHEN r3.rate IS NULL
@@ -203,12 +199,12 @@ surat AS (
         ON  b.dealid = fd.dealid
         AND b.siteid = fd.siteid
 
-    -- ФАҚАТ 1158 ДАН ТАШҚАРИ УЧУН LPB JOIN
+    -- ✅ ФАҚАТ 1158 ДАН ТАШҚАРИ УЧУН LPB JOIN
     LEFT JOIN creator_k.Loan_Portfolio_Best lp3
         ON  lp3.dealid  = fd.dealid
         AND lp3.siteid  = fd.siteid
         AND lp3.arcdate = fd.first_overdue_date
-        AND fd.siteid  <> 1158
+        AND fd.siteid  <> 1158                   -- ✅ 1158 УЧУН JOIN ИШЛАМАЙДИ
 
     LEFT JOIN creator_k.currencyrateall r3
         ON  r3.arcdate    = DATE '2026-04-30'
@@ -221,9 +217,6 @@ surat_total AS (
     FROM surat
 )
 
--- ================================================
--- 1-ҚИСМ: ДЕТАЛ
--- ================================================
 SELECT /*+ PARALLEL(4) */
     s.dealid                        AS "Код сделки",
     s.DEALNO                        AS "Номер договора",
@@ -243,9 +236,6 @@ FROM surat s
 
 UNION ALL
 
--- ================================================
--- 2-ҚИСМ: ЖАМИ INFLOW RATE
--- ================================================
 SELECT /*+ PARALLEL(4) */
     NULL                            AS "Код сделки",
     '★ ИТОГО INFLOW RATE'          AS "Номер договора",
