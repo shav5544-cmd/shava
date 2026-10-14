@@ -521,8 +521,11 @@ function setup() {
   if (!P('TOKEN')) throw new Error('Сначала добавьте TOKEN в «Свойства скрипта» (Настройки проекта).');
   if (!P('SECRET')) props().setProperty('SECRET', Utilities.getUuid().replace(/-/g, ''));
   sheet('Log'); sheet('Wish');
-  const url = ScriptApp.getService().getUrl();
-  if (!url) throw new Error('Сначала разверните проект как веб-приложение (Развернуть → Новое развертывание → Веб-приложение).');
+  // getUrl() из редактора может вернуть тестовый адрес …/dev, который Telegram не пускают (401),
+  // поэтому берём рабочий адрес …/exec из свойства WEBAPP_URL.
+  const url = P('WEBAPP_URL') || ScriptApp.getService().getUrl();
+  if (!url) throw new Error('Сначала разверните проект как веб-приложение и добавьте его адрес в свойство WEBAPP_URL.');
+  if (!/\/exec$/.test(url)) throw new Error('Адрес веб-приложения должен заканчиваться на /exec. Скопируйте его из «Управление развертываниями» в свойство WEBAPP_URL.');
   const r = tg('setWebhook', { url: url + '?k=' + P('SECRET'), drop_pending_updates: true, allowed_updates: ['message', 'callback_query'] });
   console.log('setWebhook:', JSON.stringify(r));
   ScriptApp.getProjectTriggers().forEach((t) => ScriptApp.deleteTrigger(t));
