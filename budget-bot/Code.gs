@@ -29,7 +29,7 @@ const PLAN = [
 
 const CAFE_RE = /пив|водк|шашлык|бургер|ужин|обед|норин|калла|лаваш|сомса|safia|evos|евос|kfc|kfs|торт|сигар|кафе|ресторан/i;
 const KEYBOARD = {
-  keyboard: [[{ text: '📊 Сегодня' }, { text: '📅 Неделя' }], [{ text: '🛍 Список желаний' }, { text: '⚙️ Лимиты' }]],
+  keyboard: [[{ text: '📊 Сегодня' }, { text: '📅 Неделя' }], [{ text: '🛍 Список желаний' }, { text: '⚙️ Лимиты' }], [{ text: '📥 Импорт MoneyLover' }]],
   resize_keyboard: true,
   is_persistent: true,
 };
@@ -121,7 +121,7 @@ function handle(u) {
   if (/^\/limits|^⚙️/.test(text)) return showLimits();
   if (/^\/limit\s+/.test(text)) return setLimit(text);
   if (/^\/undo/.test(text)) return undo();
-  if (/^\/import/.test(text)) { const r = importMoneyLover(); return send(r.found ? r.text : 'Сегодняшний экспорт MoneyLover на Диске не найден.'); }
+  if (/^\/import|^📥/.test(text)) { const r = importMoneyLover(); return send(r.found ? r.text : 'Сегодняшний экспорт MoneyLover на Диске не найден.'); }
   if (/^\/month/.test(text)) return send(monthText(new Date()));
 
   const parsed = parseAmount(text);
