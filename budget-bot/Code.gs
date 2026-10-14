@@ -72,7 +72,11 @@ function send(text, markup) {
   const chat = owner();
   if (!chat) return;
   text = text.replace(/\.\.(\s|$)/g, '.$1');
-  tg('sendMessage', { chat_id: chat, text, parse_mode: 'HTML', reply_markup: markup || KEYBOARD, disable_web_page_preview: true });
+  const r = tg('sendMessage', { chat_id: chat, text, parse_mode: 'HTML', reply_markup: markup || KEYBOARD, disable_web_page_preview: true });
+  if (!r.ok) {
+    console.error('sendMessage: ' + JSON.stringify(r));
+    tg('sendMessage', { chat_id: chat, text: text.replace(/<[^>]+>/g, ''), reply_markup: markup || KEYBOARD });
+  }
 }
 
 function doPost(e) {
@@ -88,6 +92,7 @@ function doPost(e) {
     try { handle(u); } finally { lock.releaseLock(); }
   } catch (err) {
     console.error(err && err.stack || err);
+    try { send('⚠️ Ошибка в боте: ' + esc(err && err.message || err) + '\nПришлите этот текст Claude.'); } catch (e2) { console.error(e2); }
   }
   return ok();
 }
@@ -121,7 +126,7 @@ function handle(u) {
   if (/^\/limits|^⚙️/.test(text)) return showLimits();
   if (/^\/limit\s+/.test(text)) return setLimit(text);
   if (/^\/undo/.test(text)) return undo();
-  if (/^\/import|^📥/.test(text)) { const r = importMoneyLover(); return send(r.found ? r.text : 'Сегодняшний экспорт MoneyLover на Диске не найден.'); }
+  if (/^\/import|^📥/.test(text)) { send('⏳ Забираю экспорт MoneyLover с Диска…'); const r = importMoneyLover(); return send(r.found ? r.text : 'Сегодняшний экспорт MoneyLover на Диске не найден.'); }
   if (/^\/month/.test(text)) return send(monthText(new Date()));
 
   const parsed = parseAmount(text);
@@ -442,9 +447,12 @@ function importMoneyLover() {
     }
     const t = new Date(r.d); t.setHours(20, 0, 0, 0);
     const e = { id: 'ml' + uid(), t, a: r.a, c, n: r.note || r.cat, src: 'ml', key, ov };
-    addLog(e);
     added.push(e);
   });
+  if (added.length) {
+    const sh = sheet('Log');
+    sh.getRange(sh.getLastRow() + 1, 1, added.length, 8).setValues(added.map((e) => [e.id, e.t, e.a, e.c, e.n, e.src, e.key, e.ov || '']));
+  }
   const C = calc();
   const todayAdded = added.filter((e) => e.t >= today);
   const warn = Object.keys(CATS).filter((c) => C.catLeft(c) < 0).map((c) => `⚠️ ${CATS[c]}: превышение ${k(-C.catLeft(c))}`);
