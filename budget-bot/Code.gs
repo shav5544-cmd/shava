@@ -448,7 +448,7 @@ function importMoneyLover() {
   if (!file) return { found: false };
   const rows = readExport(file);
   const from = new Date(Math.min(monthStart(now).getTime(), today.getTime() - 6 * 864e5)); // весь месяц — чтобы лимит одежды считался верно
-  const log = readLog(), keys = {}, seen = {};
+  const log = readLog(), keys = {}, seen = {}, usedManual = {};
   log.forEach((e) => { if (e.key) keys[e.key] = 1; });
   const L = limits();
   let clothesM = log.filter((e) => e.c === 'clothes' && e.t >= monthStart(now)).reduce((s, e) => s + e.a, 0);
@@ -460,7 +460,9 @@ function importMoneyLover() {
     seen[base] = (seen[base] || 0) + 1;
     const key = base + '|' + seen[base];
     if (keys[key]) return;
-    const manual = log.find((e) => !e.src && e.c === c && e.a === r.a && dayStart(e.t).getTime() === r.d.getTime());
+    // ручная запись в боте того же дня и на ту же сумму — это та же трата (категории могут отличаться)
+    const manual = log.find((e) => !e.src && !usedManual[e.id] && e.a === r.a && dayStart(e.t).getTime() === r.d.getTime());
+    if (manual) usedManual[manual.id] = 1;
     if (manual) { keys[key] = 1; return; }
     let ov = 0;
     if (c === 'clothes') {
