@@ -413,13 +413,13 @@ function flexCat(r) {
   return null;
 }
 
-/** Забирает сегодняшний экспорт и вносит гибкие траты за последние 7 дней. */
+/** Забирает сегодняшний экспорт и вносит гибкие траты с начала месяца (и минимум за 7 дней). */
 function importMoneyLover() {
   const now = new Date(), today = dayStart(now);
   const file = findExport(today, today);
   if (!file) return { found: false };
   const rows = readExport(file);
-  const from = new Date(today); from.setDate(from.getDate() - 6);
+  const from = new Date(Math.min(monthStart(now).getTime(), today.getTime() - 6 * 864e5)); // весь месяц — чтобы лимит одежды считался верно
   const log = readLog(), keys = {}, seen = {};
   log.forEach((e) => { if (e.key) keys[e.key] = 1; });
   const L = limits();
