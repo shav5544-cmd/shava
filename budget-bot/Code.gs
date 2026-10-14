@@ -97,6 +97,29 @@ function doPost(e) {
   return ok();
 }
 function doGet() { return ok(); }
+
+/**
+ * Забирает новые сообщения из Telegram (запускается раз в минуту).
+ * Вебхук Google Apps Script отвечает Telegram переадресацией 302, из-за этого
+ * Telegram «вешает» очередь, поэтому бот сам опрашивает Telegram.
+ */
+function poll() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) return;
+  try {
+    let offset = +P('OFFSET') || 0;
+    const r = tg('getUpdates', { offset, timeout: 0, limit: 20, allowed_updates: ['message', 'callback_query'] });
+    if (!r.ok) { console.error('getUpdates: ' + JSON.stringify(r)); return; }
+    r.result.forEach((u) => {
+      offset = u.update_id + 1;
+      props().setProperty('OFFSET', String(offset)); // сначала сдвигаем, чтобы сбойное сообщение не повторялось
+      try { handle(u); } catch (err) {
+        console.error(err && err.stack || err);
+        try { send('⚠️ Ошибка в боте: ' + esc(err && err.message || err) + '\nПришлите этот текст Claude.'); } catch (e2) { console.error(e2); }
+      }
+    });
+  } finally { lock.releaseLock(); }
+}
 function ok() { return ContentService.createTextOutput('ok'); }
 
 function handle(u) {
@@ -138,7 +161,7 @@ function handle(u) {
 }
 
 function welcome() {
-  send('Привет! Я ваш бюджет-бот.\n\n' +
+  send('Привет! Я ваш бюджет-бот. Отвечаю в течение минуты.\n\n' +
     '• Перед покупкой напишите сумму, например <b>150000 обед</b>, и я скажу, можно ли.\n' +
     '• В 21:00 напомню выгрузить MoneyLover на Диск, в 21:30 сам внесу траты и пришлю итог дня.\n' +
     '• В воскресенье — итог недели, 2-го числа — итог месяца по плану экономии.\n\n/help — все команды.');
@@ -529,18 +552,16 @@ function setup() {
   if (!P('TOKEN')) throw new Error('Сначала добавьте TOKEN в «Свойства скрипта» (Настройки проекта).');
   if (!P('SECRET')) props().setProperty('SECRET', Utilities.getUuid().replace(/-/g, ''));
   sheet('Log'); sheet('Wish');
-  // getUrl() из редактора может вернуть тестовый адрес …/dev, который Telegram не пускают (401),
-  // поэтому берём рабочий адрес …/exec из свойства WEBAPP_URL.
-  const url = P('WEBAPP_URL') || ScriptApp.getService().getUrl();
-  if (!url) throw new Error('Сначала разверните проект как веб-приложение и добавьте его адрес в свойство WEBAPP_URL.');
-  if (!/\/exec$/.test(url)) throw new Error('Адрес веб-приложения должен заканчиваться на /exec. Скопируйте его из «Управление развертываниями» в свойство WEBAPP_URL.');
-  const r = tg('setWebhook', { url: url + '?k=' + P('SECRET'), drop_pending_updates: true, allowed_updates: ['message', 'callback_query'] });
-  console.log('setWebhook:', JSON.stringify(r));
+  // Работаем без вебхука: удаляем его и сбрасываем застрявшие сообщения
+  const r = tg('deleteWebhook', { drop_pending_updates: true });
+  console.log('deleteWebhook:', JSON.stringify(r));
+  props().deleteProperty('OFFSET');
   ScriptApp.getProjectTriggers().forEach((t) => ScriptApp.deleteTrigger(t));
   ScriptApp.newTrigger('dailyReminder').timeBased().everyDays(1).atHour(21).nearMinute(0).create();
   ScriptApp.newTrigger('dailyImport').timeBased().everyDays(1).atHour(21).nearMinute(30).create();
   ScriptApp.newTrigger('weeklySummary').timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(20).nearMinute(45).create();
   ScriptApp.newTrigger('monthlySummary').timeBased().onMonthDay(2).atHour(10).create();
   ScriptApp.newTrigger('wishReminder').timeBased().everyHours(1).create();
-  console.log('Готово. Откройте бота в Telegram и нажмите /start.');
+  ScriptApp.newTrigger('poll').timeBased().everyMinutes(1).create();
+  console.log('Готово. Бот проверяет сообщения раз в минуту — напишите ему /start и подождите до минуты.');
 }
