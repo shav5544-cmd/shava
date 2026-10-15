@@ -29,7 +29,7 @@ const PLAN = [
 
 const CAFE_RE = /пив|водк|шашлык|бургер|ужин|обед|норин|калла|лаваш|сомса|safia|evos|евос|kfc|kfs|торт|сигар|кафе|ресторан/i;
 const KEYBOARD = {
-  keyboard: [[{ text: '📊 Сегодня' }, { text: '📅 Неделя' }], [{ text: '🛍 Список желаний' }, { text: '⚙️ Лимиты' }], [{ text: '📥 Импорт MoneyLover' }]],
+  keyboard: [[{ text: '📊 Сегодня' }, { text: '📅 Неделя' }], [{ text: '🛍 Список желаний' }, { text: '⚙️ Лимиты' }], [{ text: '📈 Расходы' }, { text: '💰 Доходы' }], [{ text: '📥 Импорт MoneyLover' }]],
   resize_keyboard: true,
   is_persistent: true,
 };
@@ -151,6 +151,8 @@ function handle(u) {
   if (/^\/undo/.test(text)) return undo();
   if (/^\/import|^📥/.test(text)) { send('⏳ Забираю экспорт MoneyLover с Диска…'); const r = importMoneyLover(); return send(r.found ? r.text : 'Сегодняшний экспорт MoneyLover на Диске не найден.'); }
   if (/^\/month/.test(text)) return send(monthText(new Date()));
+  if (/^\/expenses|^📈/.test(text)) { send('⏳ Считаю расходы за 3 месяца…'); return send(expensesText()); }
+  if (/^\/income|^💰/.test(text)) { send('⏳ Считаю доходы за 3 месяца…'); return send(incomeText()); }
 
   const parsed = parseAmount(text);
   if (!parsed) return send('Напишите сумму и, по желанию, что покупаете. Например: <b>150000 обед</b> или <b>1,2 млн наушники</b>. /help — все команды.');
@@ -171,7 +173,7 @@ function help() {
     '<b>150000 обед</b> — проверить покупку\n' +
     '/today — сегодня\n/week — неделя\n/wish — список желаний\n' +
     '/limits — лимиты\n/limit cafe 400000 — изменить лимит\n' +
-    '/undo — удалить последнюю запись\n/import — забрать экспорт MoneyLover сейчас\n/month — итог месяца по плану\n\n' +
+    '/undo — удалить последнюю запись\n/import — забрать экспорт MoneyLover сейчас\n/month — итог месяца по плану\n/expenses — расходы за 3 месяца\n/income — доходы за 3 месяца\n\n' +
     'Ключи категорий: ' + Object.keys(CATS).map((c) => `${c} — ${CATS[c]}`).join(', '));
 }
 
@@ -220,7 +222,7 @@ function sheet(name) {
   let sh = ss.getSheetByName(name);
   if (!sh) {
     sh = ss.insertSheet(name);
-    const head = name === 'Log' ? ['id', 'время', 'сумма', 'категория', 'примечание', 'источник', 'ключ', 'сверх лимита'] : ['id', 'время', 'сумма', 'категория', 'примечание'];
+    const head = name === 'History' ? ['месяц', 'тип', 'статья', 'сумма'] : name === 'Log' ? ['id', 'время', 'сумма', 'категория', 'примечание', 'источник', 'ключ', 'сверх лимита'] : ['id', 'время', 'сумма', 'категория', 'примечание'];
     sh.appendRow(head);
     sh.setFrozenRows(1);
     const def = ss.getSheetByName('Sheet1') || ss.getSheetByName('Лист1');
@@ -411,6 +413,9 @@ function findExport(since, coverDate) {
   return best;
 }
 function readExport(file) {
+  return readExportAll(file).filter((r) => r.s < 0).map((r) => Object.assign(r, { a: -r.s }));
+}
+function readExportAll(file) {
   const ss = SpreadsheetApp.open(file);
   const sh = ss.getSheetByName('Операции') || ss.getSheets()[0];
   const range = sh.getDataRange();
@@ -428,7 +433,7 @@ function readExport(file) {
     }
     const s = typeof rs === 'number' ? rs : parseFloat(String(rs).replace(/[\s ]/g, '').replace('−', '-').replace(',', '.'));
     return d ? { d, ds: Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd/MM/yyyy'), cat: String(r[iC]).trim(), s, note: String(r[iN] || '').trim(), excl: iX >= 0 && String(r[iX]).trim() !== '' } : null;
-  }).filter((r) => r && !r.excl && r.s < 0).map((r) => Object.assign(r, { a: -r.s }));
+  }).filter((r) => r && !r.excl && isFinite(r.s));
 }
 function flexCat(r) {
   const n = r.note.toLowerCase(), c = r.cat;
@@ -491,6 +496,24 @@ function importMoneyLover() {
 }
 
 /** Итог прошлого месяца по 13 статьям плана экономии. */
+function planKey(r) {
+  const n = r.note.toLowerCase(), c = r.cat;
+  if (n.indexOf('дух') >= 0) return 'perfume';
+  if (c === 'Стоянка' || /парков|стоянк/.test(n)) return 'park';
+  if (['Apple', 'Телеграмм', 'Steam Игры', 'Meta Quest'].indexOf(c) >= 0 || /claude|sider|\bии\b| ai|vpn|github|иви|подписк|яндекс/.test(n)) return 'subs';
+  if (c === 'Наличка') return 'cash';
+  if (c === 'Кийим') return 'clothes';
+  if (['Uzum', 'Pinduoduo', 'Wb'].indexOf(c) >= 0) return 'market';
+  if (c === 'Корзинка') return 'food';
+  if (c === 'Питание' && CAFE_RE.test(n)) return 'cafe';
+  if (c === 'Питание' && r.a < 60000) return 'snacks';
+  if (['Личные предметы', 'Iphone'].indexOf(c) >= 0) return 'gadgets';
+  if (c === 'Транспорт' && !/страховк|замена масла/.test(n)) return 'car';
+  if (c === 'Счет за телефон') return 'phone';
+  if (c === 'Штраф') return 'fines';
+  return null;
+}
+
 function monthText(now) {
   const first = new Date(now.getFullYear(), now.getMonth() - 1, 1), last = new Date(now.getFullYear(), now.getMonth(), 0);
   const file = findExport(new Date(now.getFullYear(), now.getMonth() - 1, 1), last);
@@ -498,21 +521,7 @@ function monthText(now) {
   const sum = {};
   PLAN.forEach((p) => { sum[p[0]] = 0; });
   readExport(file).filter((r) => r.d >= first && r.d <= last).forEach((r) => {
-    const n = r.note.toLowerCase(), c = r.cat;
-    let key = null;
-    if (n.indexOf('дух') >= 0) key = 'perfume';
-    else if (c === 'Стоянка' || /парков|стоянк/.test(n)) key = 'park';
-    else if (['Apple', 'Телеграмм', 'Steam Игры', 'Meta Quest'].indexOf(c) >= 0 || /claude|sider|\bии\b| ai|vpn|github|иви|подписк|яндекс/.test(n)) key = 'subs';
-    else if (c === 'Наличка') key = 'cash';
-    else if (c === 'Кийим') key = 'clothes';
-    else if (['Uzum', 'Pinduoduo', 'Wb'].indexOf(c) >= 0) key = 'market';
-    else if (c === 'Корзинка') key = 'food';
-    else if (c === 'Питание' && CAFE_RE.test(n)) key = 'cafe';
-    else if (c === 'Питание' && r.a < 60000) key = 'snacks';
-    else if (['Личные предметы', 'Iphone'].indexOf(c) >= 0) key = 'gadgets';
-    else if (c === 'Транспорт' && !/страховк|замена масла/.test(n)) key = 'car';
-    else if (c === 'Счет за телефон') key = 'phone';
-    else if (c === 'Штраф') key = 'fines';
+    const key = planKey(r);
     if (key) sum[key] += r.a / 1e6;
   });
   let saved = 0;
@@ -527,6 +536,173 @@ function monthText(now) {
     lines.join('\n') + '\n\nВсе суммы — млн сум.';
 }
 
+// ===== Анализ по месяцам =====
+const EXP_ROWS = [
+  ['loans', 'Кредиты'], ['cash', 'Наличные'], ['market', 'Маркетпл.'], ['food', 'Продукты'], ['cafe', 'Кафе'],
+  ['clothes', 'Одежда'], ['gadgets', 'Гаджеты'], ['car', 'Авто'], ['subs', 'Подписки'], ['perfume', 'Духи'], ['other', 'Прочее'],
+];
+const INC_ROWS = [['salary', 'ЗАРПЛАТА'], ['oklad', ' Оклад'], ['bonus', ' Бонус'], ['prem', ' Премии'], ['otherInc', 'ПРОЧЕЕ']];
+const MON_S = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'];
+const MON_DAT = ['январю', 'февралю', 'марту', 'апрелю', 'маю', 'июню', 'июлю', 'августу', 'сентябрю', 'октябрю', 'ноябрю', 'декабрю'];
+const MON_PREP = ['январе', 'феврале', 'марте', 'апреле', 'мае', 'июне', 'июле', 'августе', 'сентябре', 'октябре', 'ноябре', 'декабре'];
+const ym = (d) => Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM');
+
+function expKey(r) {
+  if (['Погашение', 'Open', 'Проценты по долгам'].indexOf(r.cat) >= 0) return 'loans';
+  const k = planKey(r);
+  if (!k || k === 'snacks' || k === 'park' || k === 'phone' || k === 'fines') return 'other';
+  return k;
+}
+function incKey(r) {
+  const n = r.note.toLowerCase();
+  if (r.cat === 'Зарплата') {
+    if (!n) return 'oklad';
+    if (n.indexOf('бонус') >= 0) return 'bonus';
+    return 'prem';
+  }
+  if (/вклад|омонат/.test(n)) return null; // снятие со своего вклада — не доход
+  return 'otherInc';
+}
+/** Суммы за период из строк экспорта: {exp: {...}, inc: {...}} в сумах. */
+function totalsFromRows(rows, first, last) {
+  const t = { exp: {}, inc: {} };
+  rows.filter((r) => r.d >= first && r.d <= last).forEach((r) => {
+    if (r.s < 0) {
+      const k = expKey(Object.assign({}, r, { a: -r.s }));
+      t.exp[k] = (t.exp[k] || 0) - r.s;
+    } else if (r.s > 0) {
+      const k = incKey(r);
+      if (!k) return;
+      t.inc[k] = (t.inc[k] || 0) + r.s;
+      if (k !== 'otherInc') t.inc.salary = (t.inc.salary || 0) + r.s;
+    }
+  });
+  return t;
+}
+/** Экспорт, где есть весь месяц целиком (сделан не раньше последнего дня месяца). */
+function findExportForMonth(first, last) {
+  const it = DriveApp.searchFiles("title contains 'MoneyLover' and title contains 'Пластик' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false");
+  let best = null;
+  while (it.hasNext()) {
+    const f = it.next();
+    const r = f.getName().match(/(\d{2})\/(\d{2})\/(\d{4})-(\d{2})\/(\d{2})\/(\d{4})/);
+    if (!r) continue;
+    const from = new Date(+r[3], +r[2] - 1, +r[1]), to = new Date(+r[6], +r[5] - 1, +r[4]);
+    if (from > first || to < last || f.getDateCreated() < last) continue;
+    if (!best || f.getDateCreated() > best.getDateCreated()) best = f;
+  }
+  return best;
+}
+/** Итоги закрытого месяца: из листа History, иначе из экспорта (и сохраняет в History). */
+function monthTotals(first) {
+  const key = ym(first), sh = sheet('History');
+  const v = sh.getDataRange().getValues().slice(1).filter((r) => (r[0] instanceof Date ? ym(r[0]) : String(r[0]).replace(/^'/, '')) === key);
+  if (v.length) {
+    const t = { exp: {}, inc: {} };
+    v.forEach((r) => { t[r[1]][r[2]] = +r[3]; });
+    return t;
+  }
+  const last = new Date(first.getFullYear(), first.getMonth() + 1, 0);
+  const file = findExportForMonth(first, last);
+  if (!file) return null;
+  const t = totalsFromRows(readExportAll(file), first, last);
+  const out = [];
+  ['exp', 'inc'].forEach((kind) => Object.keys(t[kind]).forEach((k) => out.push(["'" + key, kind, k, t[kind][k]])));
+  if (!out.length) out.push(["'" + key, 'exp', 'other', 0]);
+  sh.getRange(sh.getLastRow() + 1, 1, out.length, 4).setValues(out);
+  return t;
+}
+/** Текущий месяц — из самого свежего экспорта, где он есть. */
+function currentTotals(now) {
+  const file = findExport(new Date(now.getTime() - 40 * 864e5), now);
+  return file ? totalsFromRows(readExportAll(file), monthStart(now), now) : null;
+}
+function last3() {
+  const now = new Date(), res = [];
+  for (let i = 3; i >= 1; i--) {
+    const first = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    res.push({ first, t: monthTotals(first) });
+  }
+  return res;
+}
+const m1 = (v) => (v / 1e6).toFixed(1);
+const sgn = (v) => (v > 0.05e6 ? '+' : v < -0.05e6 ? '-' : ' ') + (Math.abs(v) / 1e6).toFixed(1);
+const pad = (s, n) => (String(s) + ' '.repeat(n)).slice(0, n);
+const lpad = (s, n) => (' '.repeat(n) + String(s)).slice(-n);
+const sumObj = (o) => Object.keys(o).reduce((a, k) => a + (k === 'salary' ? 0 : o[k]), 0);
+const pct = (a, b) => (b ? Math.round((a - b) / b * 100) : 0);
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const pctS = (a, b) => { const p = pct(a, b); return (p > 0 ? '+' : p < 0 ? '−' : '') + Math.abs(p) + '%'; };
+const mm = (v) => (Math.abs(v) / 1e6).toFixed(1).replace('.', ',');
+const signed = (v) => (v >= 0 ? '+' : '−') + mm(v);
+
+function table(rows, months, kind, total, extra) {
+  const head = pad(kind === 'exp' ? 'Статья' : 'Доход', 10) + months.map((m) => lpad(MON_S[m.first.getMonth()], 5)).join('') + lpad('Δ', 6);
+  const line = (label, vals) => pad(label, 10) + vals.map((v) => lpad(m1(v), 5)).join('') + lpad(sgn(vals[2] - vals[1]), 6);
+  const body = rows.map(([k, label]) => line(label, months.map((m) => m.t[kind][k] || 0)));
+  body.push(line('ИТОГО', months.map((m) => total(m.t))));
+  return '<pre>' + esc([head].concat(body, extra || []).join('\n')) + '</pre>';
+}
+function changeLines(months, total) {
+  const out = [];
+  for (let i = 1; i < 3; i++) {
+    const a = total(months[i].t), b = total(months[i - 1].t);
+    out.push(`• ${cap(MON_N[months[i].first.getMonth()])} к ${MON_DAT[months[i - 1].first.getMonth()]}: <b>${signed(a - b)} млн (${pctS(a, b)})</b>`);
+  }
+  return out.join('\n');
+}
+function missingText(months) {
+  const miss = months.filter((m) => !m.t);
+  return miss.length ? 'Нет полного экспорта MoneyLover за: ' + miss.map((m) => MON_N[m.first.getMonth()]).join(', ') +
+    '. Выгрузите на Диск экспорт за весь период (или за каждый из этих месяцев целиком) и нажмите кнопку ещё раз.' : '';
+}
+
+function expensesText() {
+  const months = last3();
+  const miss = missingText(months);
+  if (miss) return miss;
+  const total = (t) => sumObj(t.exp);
+  const b = months[1], a = months[2];
+  const diffs = EXP_ROWS.map(([k, label]) => [label.replace('Маркетпл.', 'Маркетплейсы'), (a.t.exp[k] || 0) - (b.t.exp[k] || 0), a.t.exp[k] || 0, b.t.exp[k] || 0]);
+  const up = diffs.filter((d) => d[1] > 0.3e6).sort((x, y) => y[1] - x[1]).slice(0, 3);
+  const down = diffs.filter((d) => d[1] < -0.3e6).sort((x, y) => x[1] - y[1]).slice(0, 4);
+  const now = new Date(), cur = currentTotals(now);
+  let t = '<b>📈 Расходы за 3 месяца</b>\n' + table(EXP_ROWS, months, 'exp', total) +
+    `<i>млн сум; Δ — ${MON_N[a.first.getMonth()]} к ${MON_DAT[b.first.getMonth()]}</i>\n\n<b>Изменение по месяцам:</b>\n` + changeLines(months, total);
+  if (up.length) t += `\n\n<b>Выросло в ${MON_PREP[a.first.getMonth()]}:</b>\n` + up.map((d) => `🔴 ${d[0]}: +${mm(d[1])} млн (${mm(d[2])} против ${mm(d[3])})`).join('\n');
+  if (down.length) t += '\n\n<b>Уменьшилось:</b>\n🟢 ' + down.map((d) => `${d[0]} −${mm(d[1])}`).join(' · ') + ' млн';
+  if (cur) t += `\n\n<b>${cap(MON_N[now.getMonth()])} (идёт, 1–${now.getDate()}):</b> уже ${mm(total(cur))} млн, из них кредиты ${mm(cur.exp.loans || 0)} млн. Полное сравнение — 1-го числа.`;
+  return t;
+}
+
+function incomeText() {
+  const months = last3();
+  const miss = missingText(months);
+  if (miss) return miss;
+  const total = (t) => sumObj(t.inc);
+  const expT = (t) => sumObj(t.exp);
+  const rest = (t) => total(t) - expT(t);
+  const extra = [
+    pad('Расходы', 10) + months.map((m) => lpad(m1(expT(m.t)), 5)).join(''),
+    pad('Остаток', 10) + months.map((m) => lpad((rest(m.t) >= 0 ? '+' : '') + m1(rest(m.t)), 5)).join(''),
+  ];
+  const notes = [];
+  const bon = months.map((m) => m.t.inc.bonus || 0);
+  if (bon[2] < bon[1] && bon[1] < bon[0]) notes.push(`🟡 Бонус снижается 3-й месяц подряд: ${bon.map(mm).join(' → ')} млн`);
+  else if (bon[2] > bon[1]) notes.push(`🟢 Бонус вырос: ${mm(bon[1])} → ${mm(bon[2])} млн`);
+  const ok = months.map((m) => m.t.inc.oklad || 0);
+  if (Math.abs(ok[2] - ok[1]) < 0.5e6) notes.push(`🟢 Оклад стабильный: ${mm(ok[2])} млн`);
+  months.forEach((m) => { if (rest(m.t) < 0) notes.push(`🔴 В ${MON_PREP[m.first.getMonth()]} расходы больше доходов на ${mm(rest(m.t))} млн`); });
+  const best = months.slice().sort((x, y) => rest(y.t) - rest(x.t))[0];
+  if (rest(best.t) > 0) notes.push(`🟢 Лучший остаток — ${cap(MON_N[best.first.getMonth()])}: +${mm(rest(best.t))} млн`);
+  const now = new Date(), cur = currentTotals(now);
+  let t = '<b>💰 Доходы за 3 месяца</b>\n' + table(INC_ROWS, months, 'inc', total, extra) +
+    '<i>млн сум; Премии — отпускные, 13-я, праздничные</i>\n\n<b>Изменение по месяцам:</b>\n' + changeLines(months, total) +
+    (notes.length ? '\n\n' + notes.join('\n') : '');
+  if (cur) t += `\n\n<b>${cap(MON_N[now.getMonth()])} (идёт):</b> пришло ${mm(total(cur))} млн, из них зарплата ${mm(cur.inc.salary || 0)} млн.`;
+  return t;
+}
+
 // ===== Расписание =====
 function dailyReminder() {
   send('📤 Выгрузите MoneyLover на Диск: «Пластик» → Экспорт → «Этот месяц» → Google Диск. В 21:30 я внесу траты и пришлю итог.');
@@ -536,7 +712,10 @@ function dailyImport() {
   if (r.found) send(r.text); // без выгрузки — молчим
 }
 function weeklySummary() { send(weekText(true)); }
-function monthlySummary() { send(monthText(new Date())); }
+function monthlySummary() {
+  send(monthText(new Date()));
+  try { monthTotals(new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1)); } catch (e) { console.error(e); }
+}
 function wishReminder() {
   const due = readWish().filter((w) => {
     const age = (Date.now() - w.t.getTime()) / 36e5;
