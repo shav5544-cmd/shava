@@ -173,7 +173,7 @@ function help() {
     '<b>150000 обед</b> — проверить покупку\n' +
     '/today — сегодня\n/week — неделя\n/wish — список желаний\n' +
     '/limits — лимиты\n/limit cafe 400000 — изменить лимит\n' +
-    '/undo — удалить последнюю запись\n/import — забрать экспорт MoneyLover сейчас\n/month — итог месяца по плану\n/expenses — расходы за 3 месяца\n/income — доходы за 3 месяца\n\n' +
+    '/import — забрать экспорт MoneyLover сейчас\n/month — итог месяца по плану\n/expenses — расходы за 3 месяца\n/income — доходы за 3 месяца\n\n' +
     'Ключи категорий: ' + Object.keys(CATS).map((c) => `${c} — ${CATS[c]}`).join(', '));
 }
 
@@ -250,7 +250,7 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 // ===== Расчёты =====
 function calc(now) {
   now = now || new Date();
-  const L = limits(), log = readLog();
+  const L = limits(), log = readLog().filter((e) => e.src === 'ml'); // считаем только то, что пришло из MoneyLover
   const ws = weekStart(now), ds = dayStart(now), ms = monthStart(now);
   const wa = (e) => (isM(e.c) ? e.ov || 0 : e.a); // сколько запись съедает из недельного лимита
   const weekLimit = Object.keys(CATS).reduce((s, c) => s + (isM(c) ? 0 : L[c] || 0), 0);
@@ -292,11 +292,13 @@ function judge(a, c, wish) {
 function showVerdict(d) {
   const wish = d.wishId ? readWish().find((w) => w.id === d.wishId) : null;
   const v = judge(d.a, d.c, wish);
-  if (d.wishId && v.kind.indexOf('❌') < 0) v.acts = ['buy', 'no'];
-  d.over = v.over || 0;
   saveDraft(d);
-  const btn = { buy: { text: '✅ Купил — записать', callback_data: 'buy' }, wish: { text: '🛍 В список желаний', callback_data: 'wish' }, no: { text: '👍 Не покупаю', callback_data: 'no' } };
-  send(`<b>${v.kind}</b>\n${fmt(d.a)} сум · ${CATS[d.c]}${d.n ? ' · ' + esc(d.n) : ''}\n\n${v.p.join('\n')}`, { inline_keyboard: [v.acts.map((a) => btn[a])] });
+  const acts = [];
+  if (d.wishId) acts.push({ text: '✕ Убрать из списка', callback_data: 'dw:' + d.wishId });
+  else if (v.acts.indexOf('wish') >= 0) acts.push({ text: '🛍 В список желаний', callback_data: 'wish' });
+  send(`<b>${v.kind}</b>\n${fmt(d.a)} сум · ${CATS[d.c]}${d.n ? ' · ' + esc(d.n) : ''}\n\n${v.p.join('\n')}` +
+    `\n\n<i>Это совет — ничего не записано. Если купите, запишите трату в MoneyLover; лимиты пересчитаются после импорта 📥. ${lastImportLine()}</i>`,
+    acts.length ? { inline_keyboard: [acts] } : undefined);
 }
 
 function onCallback(cb) {
@@ -310,12 +312,7 @@ function onCallback(cb) {
     return showVerdict(d);
   }
   if (data === 'buy') {
-    if (!d || !d.c) return send('Покупка уже записана или устарела. Напишите сумму ещё раз.');
-    addLog({ id: uid(), t: new Date(), a: d.a, c: d.c, n: d.n, ov: d.over || 0 });
-    if (d.wishId) deleteRow('Wish', d.wishId);
-    CacheService.getScriptCache().remove('draft');
-    const C = calc();
-    return send(`Записано ✅ ${fmt(d.a)} сум — ${CATS[d.c]}.\nСегодня ещё можно: <b>${k(C.todayAllow)}</b> · на неделю осталось ${k(C.leftW)}.`);
+    return send('Теперь бот только советует. Покупку записывайте в MoneyLover — лимиты пересчитаются после импорта 📥.');
   }
   if (data === 'wish') {
     if (!d) return send('Не вижу покупки — напишите сумму ещё раз.');
@@ -343,13 +340,19 @@ function onCallback(cb) {
 }
 
 // ===== Ответы =====
+function lastImportLine() {
+  const t = +P('LAST_IMPORT');
+  if (!t) return 'Импорта MoneyLover ещё не было — нажмите 📥.';
+  const d = new Date(t);
+  return `Данные MoneyLover на ${d.getDate()} ${MON[d.getMonth()]}, ${Utilities.formatDate(d, Session.getScriptTimeZone(), 'HH:mm')}.`;
+}
 function todayText() {
   const C = calc();
   const list = C.inD.map((e) => `• ${esc(e.n || CATS[e.c])} — ${k(e.a)}`).join('\n');
   return `<b>Сегодня, ${dayLabel(C.now)}</b>\nМожно ещё: <b>${k(C.todayAllow)}</b>\n` +
     `Неделя: осталось ${k(C.leftW)} из ${k(C.weekLimit)}, дней: ${C.daysLeft}\n` +
     `Одежда: на месяц осталось ${k(C.catLeft('clothes'))}\n\n` +
-    (list ? `Траты сегодня (${k(C.spentD)}):\n${list}` : 'Сегодня гибких трат ещё не было.');
+    (list ? `Траты сегодня (${k(C.spentD)}):\n${list}` : 'Сегодня гибких трат в MoneyLover ещё нет.') + '\n\n<i>' + lastImportLine() + '</i>';
 }
 function weekText(final) {
   const C = calc();
@@ -453,7 +456,7 @@ function importMoneyLover() {
   if (!file) return { found: false };
   const rows = readExport(file);
   const from = new Date(Math.min(monthStart(now).getTime(), today.getTime() - 6 * 864e5)); // весь месяц — чтобы лимит одежды считался верно
-  const log = readLog(), keys = {}, seen = {}, usedManual = {};
+  const log = readLog(), keys = {}, seen = {};
   log.forEach((e) => { if (e.key) keys[e.key] = 1; });
   const L = limits();
   let clothesM = log.filter((e) => e.c === 'clothes' && e.t >= monthStart(now)).reduce((s, e) => s + e.a, 0);
@@ -466,9 +469,6 @@ function importMoneyLover() {
     const key = base + '|' + seen[base];
     if (keys[key]) return;
     // ручная запись в боте того же дня и на ту же сумму — это та же трата (категории могут отличаться)
-    const manual = log.find((e) => !e.src && !usedManual[e.id] && e.a === r.a && dayStart(e.t).getTime() === r.d.getTime());
-    if (manual) usedManual[manual.id] = 1;
-    if (manual) { keys[key] = 1; return; }
     let ov = 0;
     if (c === 'clothes') {
       const was = Math.max(0, clothesM - L.clothes);
@@ -492,6 +492,7 @@ function importMoneyLover() {
     `Одежда: на месяц осталось ${k(C.catLeft('clothes'))}` +
     (warn.length ? '\n' + warn[0] : '') +
     (added.length ? `\n\nДобавлено записей: ${added.length}` : '');
+  props().setProperty('LAST_IMPORT', String(Date.now()));
   return { found: true, text, added: added.length };
 }
 
@@ -617,6 +618,10 @@ function currentTotals(now) {
   const file = findExport(new Date(now.getTime() - 40 * 864e5), now);
   return file ? totalsFromRows(readExportAll(file), monthStart(now), now) : null;
 }
+function curMonth(now) {
+  const t = currentTotals(now);
+  return t ? { first: monthStart(now), t, partial: true } : null;
+}
 function last3() {
   const now = new Date(), res = [];
   for (let i = 3; i >= 1; i--) {
@@ -625,7 +630,8 @@ function last3() {
   }
   return res;
 }
-const m1 = (v) => (v / 1e6).toFixed(1);
+// число для ячейки шириной 5: 13.9 / 101 / +9.5 / -15
+const m1 = (v, signed) => { const p = signed && v >= 0 ? '+' : ''; const x = p + (v / 1e6).toFixed(1); return x.length > 4 ? p + Math.round(v / 1e6) : x; };
 const sgn = (v) => (v > 0.05e6 ? '+' : v < -0.05e6 ? '-' : ' ') + (Math.abs(v) / 1e6).toFixed(1);
 const pad = (s, n) => (String(s) + ' '.repeat(n)).slice(0, n);
 const lpad = (s, n) => (' '.repeat(n) + String(s)).slice(-n);
@@ -636,11 +642,13 @@ const pctS = (a, b) => { const p = pct(a, b); return (p > 0 ? '+' : p < 0 ? '−
 const mm = (v) => (Math.abs(v) / 1e6).toFixed(1).replace('.', ',');
 const signed = (v) => (v >= 0 ? '+' : '−') + mm(v);
 
-function table(rows, months, kind, total, extra) {
-  const head = pad(kind === 'exp' ? 'Статья' : 'Доход', 10) + months.map((m) => lpad(MON_S[m.first.getMonth()], 5)).join('') + lpad('Δ', 6);
-  const line = (label, vals) => pad(label, 10) + vals.map((v) => lpad(m1(v), 5)).join('') + lpad(sgn(vals[2] - vals[1]), 6);
-  const body = rows.map(([k, label]) => line(label, months.map((m) => m.t[kind][k] || 0)));
-  body.push(line('ИТОГО', months.map((m) => total(m.t))));
+// months — 3 закрытых месяца; cur — текущий (неполный) месяц или null. Δ — последний закрытый к предыдущему.
+function table(rows, months, kind, total, extra, cur) {
+  const cols = cur ? months.concat([cur]) : months;
+  const head = pad(kind === 'exp' ? 'Статья' : 'Доход', 9) + cols.map((m) => lpad(MON_S[m.first.getMonth()] + (m.partial ? '*' : ''), 5)).join('') + lpad('Δ', 6);
+  const line = (label, vals) => pad(label, 9) + vals.map((v) => lpad(m1(v), 5)).join('') + lpad(sgn(vals[2] - vals[1]), 6);
+  const body = rows.map(([k, label]) => line(label, cols.map((m) => m.t[kind][k] || 0)));
+  body.push(line('ИТОГО', cols.map((m) => total(m.t))));
   return '<pre>' + esc([head].concat(body, extra || []).join('\n')) + '</pre>';
 }
 function changeLines(months, total) {
@@ -666,12 +674,17 @@ function expensesText() {
   const diffs = EXP_ROWS.map(([k, label]) => [label.replace('Маркетпл.', 'Маркетплейсы'), (a.t.exp[k] || 0) - (b.t.exp[k] || 0), a.t.exp[k] || 0, b.t.exp[k] || 0]);
   const up = diffs.filter((d) => d[1] > 0.3e6).sort((x, y) => y[1] - x[1]).slice(0, 3);
   const down = diffs.filter((d) => d[1] < -0.3e6).sort((x, y) => x[1] - y[1]).slice(0, 4);
-  const now = new Date(), cur = currentTotals(now);
-  let t = '<b>📈 Расходы за 3 месяца</b>\n' + table(EXP_ROWS, months, 'exp', total) +
-    `<i>млн сум; Δ — ${MON_N[a.first.getMonth()]} к ${MON_DAT[b.first.getMonth()]}</i>\n\n<b>Изменение по месяцам:</b>\n` + changeLines(months, total);
+  const now = new Date(), cm = curMonth(now), cur = cm && cm.t;
+  let t = '<b>📈 Расходы по месяцам</b>\n' + table(EXP_ROWS, months, 'exp', total, null, cm) +
+    `<i>млн сум; ${cm ? `${MON_S[now.getMonth()]}* — 1–${now.getDate()} число; ` : ''}Δ — ${MON_N[a.first.getMonth()]} к ${MON_DAT[b.first.getMonth()]}</i>\n\n<b>Изменение по месяцам:</b>\n` + changeLines(months, total);
   if (up.length) t += `\n\n<b>Выросло в ${MON_PREP[a.first.getMonth()]}:</b>\n` + up.map((d) => `🔴 ${d[0]}: +${mm(d[1])} млн (${mm(d[2])} против ${mm(d[3])})`).join('\n');
   if (down.length) t += '\n\n<b>Уменьшилось:</b>\n🟢 ' + down.map((d) => `${d[0]} −${mm(d[1])}`).join(' · ') + ' млн';
-  if (cur) t += `\n\n<b>${cap(MON_N[now.getMonth()])} (идёт, 1–${now.getDate()}):</b> уже ${mm(total(cur))} млн, из них кредиты ${mm(cur.exp.loans || 0)} млн. Полное сравнение — 1-го числа.`;
+  if (cur) {
+    const days = now.getDate(), dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const noLoans = total(cur) - (cur.exp.loans || 0), prevNoLoans = total(a.t) - (a.t.exp.loans || 0);
+    t += `\n\n<b>${cap(MON_N[now.getMonth()])} (идёт, 1–${days}):</b> уже ${mm(total(cur))} млн, из них кредиты ${mm(cur.exp.loans || 0)} млн.` +
+      `\nБез кредитов в том же темпе выйдет ~${mm(noLoans / days * dim)} млн за месяц (в ${MON_PREP[a.first.getMonth()]} — ${mm(prevNoLoans)} млн).`;
+  }
   return t;
 }
 
@@ -682,9 +695,11 @@ function incomeText() {
   const total = (t) => sumObj(t.inc);
   const expT = (t) => sumObj(t.exp);
   const rest = (t) => total(t) - expT(t);
+  const now = new Date(), cm = curMonth(now), cur = cm && cm.t;
+  const cols = cm ? months.concat([cm]) : months;
   const extra = [
-    pad('Расходы', 10) + months.map((m) => lpad(m1(expT(m.t)), 5)).join(''),
-    pad('Остаток', 10) + months.map((m) => lpad((rest(m.t) >= 0 ? '+' : '') + m1(rest(m.t)), 5)).join(''),
+    pad('Расходы', 9) + cols.map((m) => lpad(m1(expT(m.t)), 5)).join(''),
+    pad('Остаток', 9) + cols.map((m) => lpad(m1(rest(m.t), true), 5)).join(''),
   ];
   const notes = [];
   const bon = months.map((m) => m.t.inc.bonus || 0);
@@ -695,9 +710,8 @@ function incomeText() {
   months.forEach((m) => { if (rest(m.t) < 0) notes.push(`🔴 В ${MON_PREP[m.first.getMonth()]} расходы больше доходов на ${mm(rest(m.t))} млн`); });
   const best = months.slice().sort((x, y) => rest(y.t) - rest(x.t))[0];
   if (rest(best.t) > 0) notes.push(`🟢 Лучший остаток — ${cap(MON_N[best.first.getMonth()])}: +${mm(rest(best.t))} млн`);
-  const now = new Date(), cur = currentTotals(now);
-  let t = '<b>💰 Доходы за 3 месяца</b>\n' + table(INC_ROWS, months, 'inc', total, extra) +
-    '<i>млн сум; Премии — отпускные, 13-я, праздничные</i>\n\n<b>Изменение по месяцам:</b>\n' + changeLines(months, total) +
+  let t = '<b>💰 Доходы по месяцам</b>\n' + table(INC_ROWS, months, 'inc', total, extra, cm) +
+    `<i>млн сум; ${cm ? `${MON_S[now.getMonth()]}* — 1–${now.getDate()} число; ` : ''}Премии — отпускные, 13-я, праздничные</i>\n\n<b>Изменение по месяцам:</b>\n` + changeLines(months, total) +
     (notes.length ? '\n\n' + notes.join('\n') : '');
   if (cur) t += `\n\n<b>${cap(MON_N[now.getMonth()])} (идёт):</b> пришло ${mm(total(cur))} млн, из них зарплата ${mm(cur.inc.salary || 0)} млн.`;
   return t;
