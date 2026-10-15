@@ -151,7 +151,7 @@ function handle(u) {
   if (/^\/undo/.test(text)) return undo();
   if (/^\/import|^📥/.test(text)) { send('⏳ Забираю экспорт MoneyLover с Диска…'); const r = importMoneyLover(); return send(r.found ? r.text : 'Сегодняшний экспорт MoneyLover на Диске не найден.'); }
   if (/^\/month/.test(text)) return send(monthText(new Date()));
-  if (/^\/expenses|^📈/.test(text)) { send('⏳ Считаю расходы за 3 месяца…'); return send(expensesText()); }
+  if (/^\/expenses|^📈/.test(text)) { send('⏳ Считаю расходы за 3 месяца…'); return [].concat(expensesText()).forEach((m) => send(m)); }
   if (/^\/income|^💰/.test(text)) { send('⏳ Считаю доходы за 3 месяца…'); return send(incomeText()); }
 
   const parsed = parseAmount(text);
@@ -222,7 +222,7 @@ function sheet(name) {
   let sh = ss.getSheetByName(name);
   if (!sh) {
     sh = ss.insertSheet(name);
-    const head = name === 'History' ? ['месяц', 'тип', 'статья', 'сумма'] : name === 'Log' ? ['id', 'время', 'сумма', 'категория', 'примечание', 'источник', 'ключ', 'сверх лимита'] : ['id', 'время', 'сумма', 'категория', 'примечание'];
+    const head = name === 'История' ? ['месяц', 'тип', 'категория', 'примечание', 'сумма'] : name === 'Log' ? ['id', 'время', 'сумма', 'категория', 'примечание', 'источник', 'ключ', 'сверх лимита'] : ['id', 'время', 'сумма', 'категория', 'примечание'];
     sh.appendRow(head);
     sh.setFrozenRows(1);
     const def = ss.getSheetByName('Sheet1') || ss.getSheetByName('Лист1');
@@ -538,45 +538,32 @@ function monthText(now) {
 }
 
 // ===== Анализ по месяцам =====
-const EXP_ROWS = [
-  ['loans', 'Кредиты'], ['cash', 'Наличные'], ['market', 'Маркетпл.'], ['food', 'Продукты'], ['cafe', 'Кафе'],
-  ['clothes', 'Одежда'], ['gadgets', 'Гаджеты'], ['car', 'Авто'], ['subs', 'Подписки'], ['perfume', 'Духи'], ['other', 'Прочее'],
-];
-const INC_ROWS = [['salary', 'ЗАРПЛАТА'], ['oklad', ' Оклад'], ['bonus', ' Бонус'], ['prem', ' Премии'], ['otherInc', 'ПРОЧЕЕ']];
+// Считаем по категориям MoneyLover, примечания — подкатегории.
 const MON_S = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'];
 const MON_DAT = ['январю', 'февралю', 'марту', 'апрелю', 'маю', 'июню', 'июлю', 'августу', 'сентябрю', 'октябрю', 'ноябрю', 'декабрю'];
 const MON_PREP = ['январе', 'феврале', 'марте', 'апреле', 'мае', 'июне', 'июле', 'августе', 'сентябре', 'октябре', 'ноябре', 'декабре'];
 const ym = (d) => Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM');
+// Короткие названия категорий MoneyLover, чтобы таблица влезала в экран телефона
+const SHORT = {
+  'Исходящий перевод': 'Переводы', 'Входящий перевод': 'Вход.перев', 'Прочие поступления': 'Прочие пост',
+  'Счет за телефон': 'Телефон', 'Счет за электроэнергию': 'Электричес', 'Счет за интернет': 'Интернет',
+  'Счет за газ': 'Газ', 'Счет за воду': 'Вода', 'Другие счета': 'Др. счета', 'Личные предметы': 'Личн.вещи',
+  'Подарки и пожертвования': 'Подарки', 'Обслуживание дома': 'Обсл.дома', 'Домашние расходы': 'Дом.расход',
+  'Прочие расходы': 'Прочие', 'Медицинский осмотр': 'Медосмотр', 'Проценты по долгам': '% по долгам',
+  'Предметы быта': 'Быт', 'Образование': 'Образован.', 'Развлечения': 'Развлеч.', 'Возврат долга': 'Возвр.долга',
+};
+const LW = 10; // ширина подписи в таблице
+const NO_NOTE = '—';
 
-function expKey(r) {
-  if (['Погашение', 'Open', 'Проценты по долгам'].indexOf(r.cat) >= 0) return 'loans';
-  const k = planKey(r);
-  if (!k || k === 'snacks' || k === 'park' || k === 'phone' || k === 'fines') return 'other';
-  return k;
-}
-function incKey(r) {
-  const n = r.note.toLowerCase();
-  if (r.cat === 'Зарплата') {
-    if (!n) return 'oklad';
-    if (n.indexOf('бонус') >= 0) return 'bonus';
-    return 'prem';
-  }
-  if (/вклад|омонат/.test(n)) return null; // снятие со своего вклада — не доход
-  return 'otherInc';
-}
-/** Суммы за период из строк экспорта: {exp: {...}, inc: {...}} в сумах. */
+const normNote = (n) => { n = String(n || '').trim().replace(/\s+/g, ' '); return n ? n.charAt(0).toUpperCase() + n.slice(1).toLowerCase() : NO_NOTE; };
+/** Суммы за период: {exp: {кат: {sum, notes: {прим: сумма}}}, inc: {...}} в сумах. */
 function totalsFromRows(rows, first, last) {
   const t = { exp: {}, inc: {} };
-  rows.filter((r) => r.d >= first && r.d <= last).forEach((r) => {
-    if (r.s < 0) {
-      const k = expKey(Object.assign({}, r, { a: -r.s }));
-      t.exp[k] = (t.exp[k] || 0) - r.s;
-    } else if (r.s > 0) {
-      const k = incKey(r);
-      if (!k) return;
-      t.inc[k] = (t.inc[k] || 0) + r.s;
-      if (k !== 'otherInc') t.inc.salary = (t.inc.salary || 0) + r.s;
-    }
+  rows.filter((r) => r.d >= first && r.d <= last && r.s !== 0).forEach((r) => {
+    const kind = r.s < 0 ? 'exp' : 'inc', a = Math.abs(r.s), c = r.cat || 'Без категории', n = normNote(r.note);
+    const node = t[kind][c] || (t[kind][c] = { sum: 0, notes: {} });
+    node.sum += a;
+    node.notes[n] = (node.notes[n] || 0) + a;
   });
   return t;
 }
@@ -594,13 +581,18 @@ function findExportForMonth(first, last) {
   }
   return best;
 }
-/** Итоги закрытого месяца: из листа History, иначе из экспорта (и сохраняет в History). */
+/** Итоги закрытого месяца: из листа История, иначе из экспорта (и сохраняет в История). */
 function monthTotals(first) {
-  const key = ym(first), sh = sheet('History');
+  const key = ym(first), sh = sheet('История');
   const v = sh.getDataRange().getValues().slice(1).filter((r) => (r[0] instanceof Date ? ym(r[0]) : String(r[0]).replace(/^'/, '')) === key);
   if (v.length) {
     const t = { exp: {}, inc: {} };
-    v.forEach((r) => { t[r[1]][r[2]] = +r[3]; });
+    v.forEach((r) => {
+      if (!r[2]) return;
+      const node = t[r[1]][r[2]] || (t[r[1]][r[2]] = { sum: 0, notes: {} });
+      node.sum += +r[4];
+      node.notes[String(r[3])] = (node.notes[String(r[3])] || 0) + +r[4];
+    });
     return t;
   }
   const last = new Date(first.getFullYear(), first.getMonth() + 1, 0);
@@ -608,9 +600,9 @@ function monthTotals(first) {
   if (!file) return null;
   const t = totalsFromRows(readExportAll(file), first, last);
   const out = [];
-  ['exp', 'inc'].forEach((kind) => Object.keys(t[kind]).forEach((k) => out.push(["'" + key, kind, k, t[kind][k]])));
-  if (!out.length) out.push(["'" + key, 'exp', 'other', 0]);
-  sh.getRange(sh.getLastRow() + 1, 1, out.length, 4).setValues(out);
+  ['exp', 'inc'].forEach((kind) => Object.keys(t[kind]).forEach((c) => Object.keys(t[kind][c].notes).forEach((n) => out.push(["'" + key, kind, c, n, t[kind][c].notes[n]]))));
+  if (!out.length) out.push(["'" + key, 'exp', '', '', 0]);
+  sh.getRange(sh.getLastRow() + 1, 1, out.length, 5).setValues(out);
   return t;
 }
 /** Текущий месяц — из самого свежего экспорта, где он есть. */
@@ -632,88 +624,128 @@ function last3() {
 }
 // число для ячейки шириной 5: 13.9 / 101 / +9.5 / -15
 const m1 = (v, signed) => { const p = signed && v >= 0 ? '+' : ''; const x = p + (v / 1e6).toFixed(1); return x.length > 4 ? p + Math.round(v / 1e6) : x; };
-const sgn = (v) => (v > 0.05e6 ? '+' : v < -0.05e6 ? '-' : ' ') + (Math.abs(v) / 1e6).toFixed(1);
+const sgn = (v) => (Math.abs(v) < 0.05e6 ? '0.0' : m1(v, true));
 const pad = (s, n) => (String(s) + ' '.repeat(n)).slice(0, n);
 const lpad = (s, n) => (' '.repeat(n) + String(s)).slice(-n);
-const sumObj = (o) => Object.keys(o).reduce((a, k) => a + (k === 'salary' ? 0 : o[k]), 0);
 const pct = (a, b) => (b ? Math.round((a - b) / b * 100) : 0);
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const pctS = (a, b) => { const p = pct(a, b); return (p > 0 ? '+' : p < 0 ? '−' : '') + Math.abs(p) + '%'; };
 const mm = (v) => (Math.abs(v) / 1e6).toFixed(1).replace('.', ',');
 const signed = (v) => (v >= 0 ? '+' : '−') + mm(v);
+const kindTotal = (t, kind) => Object.keys(t[kind]).reduce((a, c) => a + t[kind][c].sum, 0);
+const catSum = (t, kind, c) => (t[kind][c] ? t[kind][c].sum : 0);
+const noteSum = (t, kind, c, n) => (t[kind][c] && t[kind][c].notes[n]) || 0;
 
-// months — 3 закрытых месяца; cur — текущий (неполный) месяц или null. Δ — последний закрытый к предыдущему.
-function table(rows, months, kind, total, extra, cur) {
-  const cols = cur ? months.concat([cur]) : months;
-  const head = pad(kind === 'exp' ? 'Статья' : 'Доход', 9) + cols.map((m) => lpad(MON_S[m.first.getMonth()] + (m.partial ? '*' : ''), 5)).join('') + lpad('Δ', 6);
-  const line = (label, vals) => pad(label, 9) + vals.map((v) => lpad(m1(v), 5)).join('') + lpad(sgn(vals[2] - vals[1]), 6);
-  const body = rows.map(([k, label]) => line(label, cols.map((m) => m.t[kind][k] || 0)));
-  body.push(line('ИТОГО', cols.map((m) => total(m.t))));
-  return '<pre>' + esc([head].concat(body, extra || []).join('\n')) + '</pre>';
+/**
+ * Таблица по категориям MoneyLover с примечаниями-подкатегориями.
+ * cols — 3 закрытых месяца (+ текущий). Δ — последний закрытый к предыдущему.
+ */
+function catTable(kind, closed, cur, extra) {
+  const cols = cur ? closed.concat([cur]) : closed;
+  const label = (s, sub) => pad(sub ? ' ·' + s : (SHORT[s] || s), LW);
+  const head = pad(kind === 'exp' ? 'Категория' : 'Доход', LW) + cols.map((m) => lpad(MON_S[m.first.getMonth()] + (m.partial ? '*' : ''), 5)).join('') + lpad('Δ', 5);
+  const line = (lab, vals) => lab + vals.map((v) => lpad(m1(v), 5)).join('') + lpad(sgn(vals[2] - vals[1]), 5);
+  const cats = {};
+  cols.forEach((m) => Object.keys(m.t[kind]).forEach((c) => { cats[c] = 1; }));
+  const total4 = (c) => cols.reduce((a, m) => a + catSum(m.t, kind, c), 0);
+  const order = Object.keys(cats).sort((a, b) => total4(b) - total4(a));
+  const body = [];
+  let small = cols.map(() => 0);
+  order.forEach((c) => {
+    const vals = cols.map((m) => catSum(m.t, kind, c));
+    if (Math.max.apply(null, vals) < 0.15e6) { small = small.map((s, i) => s + vals[i]); return; }
+    body.push(line(label(c), vals));
+    const notes = {};
+    cols.forEach((m) => { if (m.t[kind][c]) Object.keys(m.t[kind][c].notes).forEach((n) => { notes[n] = 1; }); });
+    const names = Object.keys(notes);
+    if (names.length < 2 && (names[0] === NO_NOTE || !names.length)) return; // нет примечаний — подстроки не нужны
+    const nt = (n) => cols.reduce((a, m) => a + noteSum(m.t, kind, c, n), 0);
+    const sorted = names.sort((a, b) => nt(b) - nt(a));
+    const shown = sorted.filter((n, i) => i < 4 && Math.max.apply(null, cols.map((m) => noteSum(m.t, kind, c, n))) >= 0.1e6);
+    shown.forEach((n) => body.push(line(label(n === NO_NOTE && c === 'Зарплата' ? 'оклад' : n === NO_NOTE ? 'без прим.' : n, true), cols.map((m) => noteSum(m.t, kind, c, n)))));
+    const restVals = cols.map((m, i) => vals[i] - shown.reduce((a, n) => a + noteSum(m.t, kind, c, n), 0));
+    if (shown.length && Math.max.apply(null, restVals) >= 0.05e6) body.push(line(label('остальное', true), restVals));
+  });
+  if (Math.max.apply(null, small) > 0) body.push(line(label('Мелкие'), small));
+  body.push(line(pad('ИТОГО', LW), cols.map((m) => kindTotal(m.t, kind))));
+  const lines = body.concat(extra || []), blocks = [];
+  let curB = [head];
+  lines.forEach((l) => {
+    if ((curB.join('\n').length + l.length) > 3300) { blocks.push(curB); curB = [head]; }
+    curB.push(l);
+  });
+  blocks.push(curB);
+  return blocks.map((b) => '<pre>' + esc(b.join('\n')) + '</pre>');
 }
-function changeLines(months, total) {
+function changeLines(months, kind) {
   const out = [];
   for (let i = 1; i < 3; i++) {
-    const a = total(months[i].t), b = total(months[i - 1].t);
+    const a = kindTotal(months[i].t, kind), b = kindTotal(months[i - 1].t, kind);
     out.push(`• ${cap(MON_N[months[i].first.getMonth()])} к ${MON_DAT[months[i - 1].first.getMonth()]}: <b>${signed(a - b)} млн (${pctS(a, b)})</b>`);
   }
   return out.join('\n');
+}
+function moversText(months, kind) {
+  const b = months[1].t, a = months[2].t, cats = {};
+  [a, b].forEach((t) => Object.keys(t[kind]).forEach((c) => { cats[c] = 1; }));
+  const diffs = Object.keys(cats).map((c) => [c, catSum(a, kind, c) - catSum(b, kind, c), catSum(a, kind, c), catSum(b, kind, c)]);
+  const up = diffs.filter((d) => d[1] > 0.3e6).sort((x, y) => y[1] - x[1]).slice(0, 3);
+  const down = diffs.filter((d) => d[1] < -0.3e6).sort((x, y) => x[1] - y[1]).slice(0, 4);
+  const mon = MON_PREP[months[2].first.getMonth()];
+  let t = '';
+  if (up.length) t += `\n\n<b>${kind === 'exp' ? 'Выросло' : 'Больше пришло'} в ${mon}:</b>\n` + up.map((d) => `${kind === 'exp' ? '🔴' : '🟢'} ${d[0]}: +${mm(d[1])} млн (${mm(d[2])} против ${mm(d[3])})`).join('\n');
+  if (down.length) t += `\n\n<b>${kind === 'exp' ? 'Уменьшилось' : 'Меньше пришло'}:</b>\n${kind === 'exp' ? '🟢' : '🔴'} ` + down.map((d) => `${d[0]} −${mm(d[1])}`).join(' · ') + ' млн';
+  return t;
 }
 function missingText(months) {
   const miss = months.filter((m) => !m.t);
   return miss.length ? 'Нет полного экспорта MoneyLover за: ' + miss.map((m) => MON_N[m.first.getMonth()]).join(', ') +
     '. Выгрузите на Диск экспорт за весь период (или за каждый из этих месяцев целиком) и нажмите кнопку ещё раз.' : '';
 }
+function footnote(now, cm, more) {
+  return `<i>млн сум; ${cm ? `${MON_S[now.getMonth()]}* — 1–${now.getDate()} число; ` : ''}Δ — последний полный месяц к предыдущему; «·» — примечания${more ? '; ' + more : ''}</i>`;
+}
 
 function expensesText() {
   const months = last3();
   const miss = missingText(months);
   if (miss) return miss;
-  const total = (t) => sumObj(t.exp);
-  const b = months[1], a = months[2];
-  const diffs = EXP_ROWS.map(([k, label]) => [label.replace('Маркетпл.', 'Маркетплейсы'), (a.t.exp[k] || 0) - (b.t.exp[k] || 0), a.t.exp[k] || 0, b.t.exp[k] || 0]);
-  const up = diffs.filter((d) => d[1] > 0.3e6).sort((x, y) => y[1] - x[1]).slice(0, 3);
-  const down = diffs.filter((d) => d[1] < -0.3e6).sort((x, y) => x[1] - y[1]).slice(0, 4);
   const now = new Date(), cm = curMonth(now), cur = cm && cm.t;
-  let t = '<b>📈 Расходы по месяцам</b>\n' + table(EXP_ROWS, months, 'exp', total, null, cm) +
-    `<i>млн сум; ${cm ? `${MON_S[now.getMonth()]}* — 1–${now.getDate()} число; ` : ''}Δ — ${MON_N[a.first.getMonth()]} к ${MON_DAT[b.first.getMonth()]}</i>\n\n<b>Изменение по месяцам:</b>\n` + changeLines(months, total);
-  if (up.length) t += `\n\n<b>Выросло в ${MON_PREP[a.first.getMonth()]}:</b>\n` + up.map((d) => `🔴 ${d[0]}: +${mm(d[1])} млн (${mm(d[2])} против ${mm(d[3])})`).join('\n');
-  if (down.length) t += '\n\n<b>Уменьшилось:</b>\n🟢 ' + down.map((d) => `${d[0]} −${mm(d[1])}`).join(' · ') + ' млн';
+  const tb = catTable('exp', months, cm);
+  const parts = tb.map((b, i) => (i ? '' : '<b>📈 Расходы по категориям MoneyLover</b>\n') + b);
+  let t = footnote(now, cm) + '\n\n<b>Изменение по месяцам:</b>\n' + changeLines(months, 'exp') + moversText(months, 'exp');
   if (cur) {
-    const days = now.getDate(), dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-    const noLoans = total(cur) - (cur.exp.loans || 0), prevNoLoans = total(a.t) - (a.t.exp.loans || 0);
-    t += `\n\n<b>${cap(MON_N[now.getMonth()])} (идёт, 1–${days}):</b> уже ${mm(total(cur))} млн, из них кредиты ${mm(cur.exp.loans || 0)} млн.` +
-      `\nБез кредитов в том же темпе выйдет ~${mm(noLoans / days * dim)} млн за месяц (в ${MON_PREP[a.first.getMonth()]} — ${mm(prevNoLoans)} млн).`;
+    const a = months[2].t, days = now.getDate(), dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const loans = (x) => catSum(x, 'exp', 'Погашение');
+    const noLoans = kindTotal(cur, 'exp') - loans(cur), prevNoLoans = kindTotal(a, 'exp') - loans(a);
+    t += `\n\n<b>${cap(MON_N[now.getMonth()])} (идёт, 1–${days}):</b> уже ${mm(kindTotal(cur, 'exp'))} млн, из них погашение кредитов ${mm(loans(cur))} млн.` +
+      `\nБез кредитов в том же темпе выйдет ~${mm(noLoans / days * dim)} млн за месяц (в ${MON_PREP[months[2].first.getMonth()]} — ${mm(prevNoLoans)} млн).`;
   }
-  return t;
+  return parts.concat([t]);
 }
 
 function incomeText() {
   const months = last3();
   const miss = missingText(months);
   if (miss) return miss;
-  const total = (t) => sumObj(t.inc);
-  const expT = (t) => sumObj(t.exp);
-  const rest = (t) => total(t) - expT(t);
   const now = new Date(), cm = curMonth(now), cur = cm && cm.t;
   const cols = cm ? months.concat([cm]) : months;
+  const rest = (t) => kindTotal(t, 'inc') - kindTotal(t, 'exp');
   const extra = [
-    pad('Расходы', 9) + cols.map((m) => lpad(m1(expT(m.t)), 5)).join(''),
-    pad('Остаток', 9) + cols.map((m) => lpad(m1(rest(m.t), true), 5)).join(''),
+    pad('Расходы', LW) + cols.map((m) => lpad(m1(kindTotal(m.t, 'exp')), 5)).join(''),
+    pad('Остаток', LW) + cols.map((m) => lpad(m1(rest(m.t), true), 5)).join(''),
   ];
   const notes = [];
-  const bon = months.map((m) => m.t.inc.bonus || 0);
+  const bon = months.map((m) => noteSum(m.t, 'inc', 'Зарплата', 'Бонус'));
   if (bon[2] < bon[1] && bon[1] < bon[0]) notes.push(`🟡 Бонус снижается 3-й месяц подряд: ${bon.map(mm).join(' → ')} млн`);
   else if (bon[2] > bon[1]) notes.push(`🟢 Бонус вырос: ${mm(bon[1])} → ${mm(bon[2])} млн`);
-  const ok = months.map((m) => m.t.inc.oklad || 0);
-  if (Math.abs(ok[2] - ok[1]) < 0.5e6) notes.push(`🟢 Оклад стабильный: ${mm(ok[2])} млн`);
   months.forEach((m) => { if (rest(m.t) < 0) notes.push(`🔴 В ${MON_PREP[m.first.getMonth()]} расходы больше доходов на ${mm(rest(m.t))} млн`); });
   const best = months.slice().sort((x, y) => rest(y.t) - rest(x.t))[0];
-  if (rest(best.t) > 0) notes.push(`🟢 Лучший остаток — ${cap(MON_N[best.first.getMonth()])}: +${mm(rest(best.t))} млн`);
-  let t = '<b>💰 Доходы по месяцам</b>\n' + table(INC_ROWS, months, 'inc', total, extra, cm) +
-    `<i>млн сум; ${cm ? `${MON_S[now.getMonth()]}* — 1–${now.getDate()} число; ` : ''}Премии — отпускные, 13-я, праздничные</i>\n\n<b>Изменение по месяцам:</b>\n` + changeLines(months, total) +
+  if (rest(best.t) > 0) notes.push(`🟢 Лучший остаток — ${MON_N[best.first.getMonth()]}: +${mm(rest(best.t))} млн`);
+  let t = '<b>💰 Доходы по категориям MoneyLover</b>\n' + catTable('inc', months, cm, extra).join('\n') + footnote(now, cm) +
+    '\n\n<b>Изменение по месяцам:</b>\n' + changeLines(months, 'inc') + moversText(months, 'inc') +
     (notes.length ? '\n\n' + notes.join('\n') : '');
-  if (cur) t += `\n\n<b>${cap(MON_N[now.getMonth()])} (идёт):</b> пришло ${mm(total(cur))} млн, из них зарплата ${mm(cur.inc.salary || 0)} млн.`;
+  if (cur) t += `\n\n<b>${cap(MON_N[now.getMonth()])} (идёт):</b> пришло ${mm(kindTotal(cur, 'inc'))} млн, из них зарплата ${mm(catSum(cur, 'inc', 'Зарплата'))} млн.`;
   return t;
 }
 
