@@ -27,6 +27,8 @@ const PLAN = [
   ['snacks', 'Перекусы', 0.44, 0.24], ['phone', 'Связь', 0.32, 0.12], ['fines', 'Штрафы', 0.28, 0], ['park', 'Парковка', 0.16, 0.06],
 ];
 
+// Отдельные категории MoneyLover, которые сразу считаются «Кафе и алкоголь»
+const CAFE_CATS = ['Кафе', 'Ресторан', 'Рестораны', 'Кафе и рестораны', 'Алкоголь', 'Пиво', 'Фастфуд'];
 const CAFE_RE = /пив|водк|шашлык|бургер|ужин|обед|норин|калла|лаваш|сомса|safia|evos|евос|kfc|kfs|торт|сигар|кафе|ресторан/i;
 const KEYBOARD = {
   keyboard: [[{ text: '📊 Сегодня' }, { text: '📅 Неделя' }], [{ text: '🛍 Список желаний' }, { text: '⚙️ Лимиты' }], [{ text: '📈 Расходы' }, { text: '💰 Доходы' }], [{ text: '📥 Импорт MoneyLover' }]],
@@ -418,7 +420,13 @@ function findExport(since, coverDate) {
 function readExport(file) {
   return readExportAll(file).filter((r) => r.s < 0).map((r) => Object.assign(r, { a: -r.s }));
 }
+const EXPORT_MEMO = {}; // в рамках одного запуска не читаем один и тот же экспорт дважды
 function readExportAll(file) {
+  const id = file.getId ? file.getId() : file.getName() + file.getDateCreated();
+  if (!EXPORT_MEMO[id]) EXPORT_MEMO[id] = readExportAllRaw(file);
+  return EXPORT_MEMO[id].map((r) => Object.assign({}, r));
+}
+function readExportAllRaw(file) {
   const ss = SpreadsheetApp.open(file);
   const sh = ss.getSheetByName('Операции') || ss.getSheets()[0];
   const range = sh.getDataRange();
@@ -448,7 +456,7 @@ function flexCat(r) {
   const n = r.note.toLowerCase(), c = r.cat;
   if (c === 'Кийим') return 'clothes';
   if (['Uzum', 'Pinduoduo', 'Wb'].indexOf(c) >= 0) return 'market';
-  if (c === 'Питание' && CAFE_RE.test(n)) return 'cafe';
+  if (CAFE_CATS.indexOf(c) >= 0 || (c === 'Питание' && CAFE_RE.test(n))) return 'cafe';
   if (['Личные предметы', 'Iphone', 'Apple', 'Steam Игры', 'Meta Quest', 'Телеграмм'].indexOf(c) >= 0 || n.indexOf('дух') >= 0) return 'misc';
   if (c === 'Питание' && r.a < 60000) return 'misc';
   if (['Наличка', 'Такси', 'Развлечения', 'Прочие расходы', 'Предметы быта', 'Домашние расходы'].indexOf(c) >= 0) return 'cash';
@@ -512,7 +520,7 @@ function planKey(r) {
   if (c === 'Кийим') return 'clothes';
   if (['Uzum', 'Pinduoduo', 'Wb'].indexOf(c) >= 0) return 'market';
   if (c === 'Корзинка') return 'food';
-  if (c === 'Питание' && CAFE_RE.test(n)) return 'cafe';
+  if (CAFE_CATS.indexOf(c) >= 0 || (c === 'Питание' && CAFE_RE.test(n))) return 'cafe';
   if (c === 'Питание' && r.a < 60000) return 'snacks';
   if (['Личные предметы', 'Iphone'].indexOf(c) >= 0) return 'gadgets';
   if (c === 'Транспорт' && !/страховк|замена масла/.test(n)) return 'car';
@@ -574,17 +582,23 @@ function totalsFromRows(rows, first, last) {
   return t;
 }
 /** Экспорт, где есть весь месяц целиком (сделан не раньше последнего дня месяца). */
-function findExportForMonth(first, last) {
+let EXPORT_LIST = null;
+function allExports() {
+  if (EXPORT_LIST) return EXPORT_LIST;
+  EXPORT_LIST = [];
   const it = DriveApp.searchFiles("title contains 'MoneyLover' and (title contains 'Пластик' or title contains 'Итого') and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false");
+  while (it.hasNext()) EXPORT_LIST.push(it.next());
+  return EXPORT_LIST;
+}
+function findExportForMonth(first, last) {
   let best = null;
-  while (it.hasNext()) {
-    const f = it.next();
+  allExports().forEach((f) => {
     const r = f.getName().match(/(\d{2})\/(\d{2})\/(\d{4})-(\d{2})\/(\d{2})\/(\d{4})/);
-    if (!r) continue;
+    if (!r) return;
     const from = new Date(+r[3], +r[2] - 1, +r[1]), to = new Date(+r[6], +r[5] - 1, +r[4]);
-    if (from > first || to < last || f.getDateCreated() < last) continue;
+    if (from > first || to < last || f.getDateCreated() < last) return;
     if (!best || f.getDateCreated() > best.getDateCreated()) best = f;
-  }
+  });
   return best;
 }
 /** Итоги закрытого месяца: из листа История, иначе из экспорта (и сохраняет в История). */
