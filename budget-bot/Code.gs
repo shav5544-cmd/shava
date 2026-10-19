@@ -7,13 +7,13 @@
 
 // ===== Настройки =====
 const CATS = {
-  cafe: 'Кафе и алкоголь',
+  cafe: 'Питание и кафе',
   clothes: 'Одежда',
   market: 'Маркетплейсы',
   misc: 'Гаджеты, духи, перекусы',
   cash: 'Прочее / наличные',
 };
-const DEFAULT_LIMITS = { cafe: 550000, clothes: 2500000, market: 380000, misc: 150000, cash: 460000 };
+const DEFAULT_LIMITS = { cafe: 600000, clothes: 2500000, market: 380000, misc: 150000, cash: 460000 };
 const MONTHLY = ['clothes']; // лимит на месяц, остальные — на неделю
 const BIG = 500000; // от этой суммы — правило 48 часов
 const WAIT_H = 48;
@@ -27,7 +27,18 @@ const PLAN = [
   ['snacks', 'Перекусы', 0.44, 0.24], ['phone', 'Связь', 0.32, 0.12], ['fines', 'Штрафы', 0.28, 0], ['park', 'Парковка', 0.16, 0.06],
 ];
 
-// «Питание» без примечания — это обед, тоже «Кафе и алкоголь».
+// «Питание» делим по примечаниям на группы. Пустое примечание — обед.
+const RULES_VERSION = '2026-10-19-food'; // при смене правил бот пересчитывает всё заново
+function foodGroup(note) {
+  const n = String(note || '').toLowerCase().trim();
+  if (!n) return 'Обед';
+  if (/пив|водк|вино|коньяк|виски|алко|шампан/.test(n)) return 'Алкоголь';
+  if (/сигар|iqos|айкос|вейп|табак/.test(n)) return 'Сигареты';
+  if (/гушт|мяс|уйга|домой|продукт|бозор|базар|курица|тову?қ/.test(n)) return 'Домой';
+  if (/торт|шоколад|конфет|сладк|десерт|морожен/.test(n)) return 'Сладкое';
+  return 'Кафе/еда';
+}
+// Всё «Питание» входит в недельный лимит «Питание и кафе».
 // Отдельные категории MoneyLover, которые сразу считаются «Кафе и алкоголь»
 const CAFE_CATS = ['Кафе', 'Ресторан', 'Рестораны', 'Кафе и рестораны', 'Алкоголь', 'Пиво', 'Фастфуд'];
 const CAFE_RE = /пив|водк|шашлык|бургер|ужин|обед|норин|калла|лаваш|сомса|safia|evos|евос|kfc|kfs|торт|сигар|кафе|ресторан/i;
@@ -110,6 +121,7 @@ function poll() {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(1000)) return;
   try {
+    if (P('RULES') !== RULES_VERSION) resetData(true);
     let offset = +P('OFFSET') || 0;
     const r = tg('getUpdates', { offset, timeout: 0, limit: 20, allowed_updates: ['message', 'callback_query'] });
     if (!r.ok) { console.error('getUpdates: ' + JSON.stringify(r)); return; }
@@ -152,6 +164,7 @@ function handle(u) {
   if (/^\/limits|^⚙️/.test(text)) return showLimits();
   if (/^\/limit\s+/.test(text)) return setLimit(text);
   if (/^\/undo/.test(text)) return undo();
+  if (/^\/reset/.test(text)) return resetData(true);
   if (/^\/import|^📥/.test(text)) { send('⏳ Забираю экспорт MoneyLover с Диска…'); const r = importMoneyLover(); return send(r.found ? r.text : 'Сегодняшний экспорт MoneyLover на Диске не найден.'); }
   if (/^\/month/.test(text)) return send(monthText(new Date()));
   if (/^\/expenses|^📈/.test(text)) { send('⏳ Считаю расходы за 3 месяца…'); return [].concat(expensesText()).forEach((m) => send(m)); }
@@ -457,17 +470,27 @@ function flexCat(r) {
   const n = r.note.toLowerCase(), c = r.cat;
   if (c === 'Кийим') return 'clothes';
   if (['Uzum', 'Pinduoduo', 'Wb'].indexOf(c) >= 0) return 'market';
-  if (CAFE_CATS.indexOf(c) >= 0 || (c === 'Питание' && (!n.trim() || CAFE_RE.test(n)))) return 'cafe';
+  if (CAFE_CATS.indexOf(c) >= 0 || c === 'Питание') return 'cafe';
   if (['Личные предметы', 'Iphone', 'Apple', 'Steam Игры', 'Meta Quest', 'Телеграмм'].indexOf(c) >= 0 || n.indexOf('дух') >= 0) return 'misc';
-  if (c === 'Питание' && r.a < 60000) return 'misc';
   if (['Наличка', 'Такси', 'Развлечения', 'Прочие расходы', 'Предметы быта', 'Домашние расходы'].indexOf(c) >= 0) return 'cash';
   return null;
 }
 
 /** Забирает сегодняшний экспорт и вносит гибкие траты с начала месяца (и минимум за 7 дней). */
-function importMoneyLover() {
+/** Новые правила: стираем расчёты бота и пересчитываем из MoneyLover. */
+function resetData(announce) {
+  props().setProperty('RULES', RULES_VERSION);
+  const log = sheet('Log');
+  if (log.getLastRow() > 1) log.deleteRows(2, log.getLastRow() - 1);
+  const hist = sheet('История');
+  if (hist.getLastRow() > 1) hist.deleteRows(2, hist.getLastRow() - 1);
+  props().deleteProperty('LAST_IMPORT');
+  const r = importMoneyLover(true);
+  if (announce) send('🔄 Правила обновлены — пересчитал всё заново.' + (r.found ? '\n\n' + r.text : '\nЭкспорт MoneyLover не найден — нажмите 📥 после выгрузки.'));
+}
+function importMoneyLover(anyRecent) {
   const now = new Date(), today = dayStart(now);
-  const file = findExport(today, today);
+  const file = findExport(anyRecent ? new Date(now.getTime() - 40 * 864e5) : today, today);
   if (!file) return { found: false };
   const rows = readExport(file);
   const from = new Date(Math.min(monthStart(now).getTime(), today.getTime() - 6 * 864e5)); // весь месяц — чтобы лимит одежды считался верно
@@ -521,8 +544,7 @@ function planKey(r) {
   if (c === 'Кийим') return 'clothes';
   if (['Uzum', 'Pinduoduo', 'Wb'].indexOf(c) >= 0) return 'market';
   if (c === 'Корзинка') return 'food';
-  if (CAFE_CATS.indexOf(c) >= 0 || (c === 'Питание' && (!n.trim() || CAFE_RE.test(n)))) return 'cafe';
-  if (c === 'Питание' && r.a < 60000) return 'snacks';
+  if (CAFE_CATS.indexOf(c) >= 0 || c === 'Питание') return 'cafe';
   if (['Личные предметы', 'Iphone'].indexOf(c) >= 0) return 'gadgets';
   if (c === 'Транспорт' && !/страховк|замена масла/.test(n)) return 'car';
   if (c === 'Счет за телефон') return 'phone';
@@ -575,7 +597,8 @@ const normNote = (n) => { n = String(n || '').trim().replace(/\s+/g, ' '); retur
 function totalsFromRows(rows, first, last) {
   const t = { exp: {}, inc: {} };
   rows.filter((r) => r.d >= first && r.d <= last && r.s !== 0).forEach((r) => {
-    const kind = r.s < 0 ? 'exp' : 'inc', a = Math.abs(r.s), c = r.cat || 'Без категории', n = normNote(r.note);
+    const kind = r.s < 0 ? 'exp' : 'inc', a = Math.abs(r.s), c = r.cat || 'Без категории';
+    const n = c === 'Питание' ? foodGroup(r.note) : normNote(r.note);
     const node = t[kind][c] || (t[kind][c] = { sum: 0, notes: {} });
     node.sum += a;
     node.notes[n] = (node.notes[n] || 0) + a;
@@ -682,7 +705,8 @@ function catTable(kind, closed, cur, extra) {
     if (names.length < 2 && (names[0] === NO_NOTE || !names.length)) return; // нет примечаний — подстроки не нужны
     const nt = (n) => cols.reduce((a, m) => a + noteSum(m.t, kind, c, n), 0);
     const sorted = names.sort((a, b) => nt(b) - nt(a));
-    const shown = sorted.filter((n, i) => i < 4 && Math.max.apply(null, cols.map((m) => noteSum(m.t, kind, c, n))) >= 0.1e6);
+    const maxShown = c === 'Питание' ? 6 : 4, minShown = c === 'Питание' ? 0.01e6 : 0.1e6;
+    const shown = sorted.filter((n, i) => i < maxShown && Math.max.apply(null, cols.map((m) => noteSum(m.t, kind, c, n))) >= minShown);
     shown.forEach((n) => body.push(line(label(n === NO_NOTE && c === 'Зарплата' ? 'оклад' : n === NO_NOTE ? 'без прим.' : n, true), cols.map((m) => noteSum(m.t, kind, c, n)))));
     const restVals = cols.map((m, i) => vals[i] - shown.reduce((a, n) => a + noteSum(m.t, kind, c, n), 0));
     if (shown.length && Math.max.apply(null, restVals) >= 0.05e6) body.push(line(label('остальное', true), restVals));
