@@ -401,7 +401,7 @@ function undo() {
 
 // ===== MoneyLover =====
 function findExport(since, coverDate) {
-  const q = `title contains 'MoneyLover' and title contains 'Пластик' and mimeType = 'application/vnd.google-apps.spreadsheet' and modifiedDate > '${Utilities.formatDate(since, 'UTC', "yyyy-MM-dd'T'HH:mm:ss")}' and trashed = false`;
+  const q = `title contains 'MoneyLover' and (title contains 'Пластик' or title contains 'Итого') and mimeType = 'application/vnd.google-apps.spreadsheet' and modifiedDate > '${Utilities.formatDate(since, 'UTC', "yyyy-MM-dd'T'HH:mm:ss")}' and trashed = false`;
   const it = DriveApp.searchFiles(q);
   let best = null;
   while (it.hasNext()) {
@@ -425,7 +425,12 @@ function readExportAll(file) {
   const v = range.getDisplayValues(), raw = range.getValues();
   const h = v[0];
   const col = (name) => h.findIndex((x) => String(x).indexOf(name) === 0);
-  const iD = col('Дата'), iC = col('Категория'), iS = col('Сумма'), iN = col('Примечание'), iX = col('Исключить');
+  const iD = col('Дата'), iC = col('Категория'), iS = col('Сумма'), iN = col('Примечание'), iX = col('Исключить'), iW = col('Кошел');
+  // Экспорт «Итого» — все кошельки. Если есть кошелёк «Наличка», снятие наличных с карты (категория «Наличка»)
+  // — это перевод в кошелёк, а сами траты наличными записаны в нём. Не считаем снятие дважды.
+  const wallets = {};
+  if (iW >= 0) v.slice(1).forEach((r) => { wallets[String(r[iW]).trim()] = 1; });
+  const skipCashOut = Object.keys(wallets).length > 1 && wallets['Наличка'];
   return v.slice(1).map((r, i) => {
     const rd = raw[i + 1][iD], rs = raw[i + 1][iS];
     let d = null;
@@ -435,7 +440,8 @@ function readExportAll(file) {
       if (dm) d = new Date(+dm[3], +dm[2] - 1, +dm[1]);
     }
     const s = typeof rs === 'number' ? rs : parseFloat(String(rs).replace(/[\s ]/g, '').replace('−', '-').replace(',', '.'));
-    return d ? { d, ds: Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd/MM/yyyy'), cat: String(r[iC]).trim(), s, note: String(r[iN] || '').trim(), excl: iX >= 0 && String(r[iX]).trim() !== '' } : null;
+    const cat = String(r[iC]).trim();
+    return d ? { d, ds: Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd/MM/yyyy'), cat, s, note: String(r[iN] || '').trim(), wallet: iW >= 0 ? String(r[iW]).trim() : '', excl: (iX >= 0 && String(r[iX]).trim() !== '') || (skipCashOut && cat === 'Наличка') } : null;
   }).filter((r) => r && !r.excl && isFinite(r.s));
 }
 function flexCat(r) {
@@ -569,7 +575,7 @@ function totalsFromRows(rows, first, last) {
 }
 /** Экспорт, где есть весь месяц целиком (сделан не раньше последнего дня месяца). */
 function findExportForMonth(first, last) {
-  const it = DriveApp.searchFiles("title contains 'MoneyLover' and title contains 'Пластик' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false");
+  const it = DriveApp.searchFiles("title contains 'MoneyLover' and (title contains 'Пластик' or title contains 'Итого') and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false");
   let best = null;
   while (it.hasNext()) {
     const f = it.next();
@@ -751,7 +757,7 @@ function incomeText() {
 
 // ===== Расписание =====
 function dailyReminder() {
-  send('📤 Выгрузите MoneyLover на Диск: «Пластик» → Экспорт → «Этот месяц» → Google Диск. В 21:30 я внесу траты и пришлю итог.');
+  send('📤 Выгрузите MoneyLover на Диск: кошелёк «Итого» (все кошельки) → Экспорт → «Этот месяц» → Google Диск. В 21:30 я внесу траты и пришлю итог.');
 }
 function dailyImport() {
   const r = importMoneyLover();
