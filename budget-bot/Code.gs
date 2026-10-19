@@ -13,7 +13,7 @@ const CATS = {
   misc: 'Гаджеты, духи, перекусы',
   cash: 'Прочее / наличные',
 };
-const DEFAULT_LIMITS = { cafe: 360000, clothes: 2500000, market: 380000, misc: 230000, cash: 460000 };
+const DEFAULT_LIMITS = { cafe: 550000, clothes: 2500000, market: 380000, misc: 150000, cash: 460000 };
 const MONTHLY = ['clothes']; // лимит на месяц, остальные — на неделю
 const BIG = 500000; // от этой суммы — правило 48 часов
 const WAIT_H = 48;
@@ -27,6 +27,7 @@ const PLAN = [
   ['snacks', 'Перекусы', 0.44, 0.24], ['phone', 'Связь', 0.32, 0.12], ['fines', 'Штрафы', 0.28, 0], ['park', 'Парковка', 0.16, 0.06],
 ];
 
+// «Питание» без примечания — это обед, тоже «Кафе и алкоголь».
 // Отдельные категории MoneyLover, которые сразу считаются «Кафе и алкоголь»
 const CAFE_CATS = ['Кафе', 'Ресторан', 'Рестораны', 'Кафе и рестораны', 'Алкоголь', 'Пиво', 'Фастфуд'];
 const CAFE_RE = /пив|водк|шашлык|бургер|ужин|обед|норин|калла|лаваш|сомса|safia|evos|евос|kfc|kfs|торт|сигар|кафе|ресторан/i;
@@ -456,7 +457,7 @@ function flexCat(r) {
   const n = r.note.toLowerCase(), c = r.cat;
   if (c === 'Кийим') return 'clothes';
   if (['Uzum', 'Pinduoduo', 'Wb'].indexOf(c) >= 0) return 'market';
-  if (CAFE_CATS.indexOf(c) >= 0 || (c === 'Питание' && CAFE_RE.test(n))) return 'cafe';
+  if (CAFE_CATS.indexOf(c) >= 0 || (c === 'Питание' && (!n.trim() || CAFE_RE.test(n)))) return 'cafe';
   if (['Личные предметы', 'Iphone', 'Apple', 'Steam Игры', 'Meta Quest', 'Телеграмм'].indexOf(c) >= 0 || n.indexOf('дух') >= 0) return 'misc';
   if (c === 'Питание' && r.a < 60000) return 'misc';
   if (['Наличка', 'Такси', 'Развлечения', 'Прочие расходы', 'Предметы быта', 'Домашние расходы'].indexOf(c) >= 0) return 'cash';
@@ -520,7 +521,7 @@ function planKey(r) {
   if (c === 'Кийим') return 'clothes';
   if (['Uzum', 'Pinduoduo', 'Wb'].indexOf(c) >= 0) return 'market';
   if (c === 'Корзинка') return 'food';
-  if (CAFE_CATS.indexOf(c) >= 0 || (c === 'Питание' && CAFE_RE.test(n))) return 'cafe';
+  if (CAFE_CATS.indexOf(c) >= 0 || (c === 'Питание' && (!n.trim() || CAFE_RE.test(n)))) return 'cafe';
   if (c === 'Питание' && r.a < 60000) return 'snacks';
   if (['Личные предметы', 'Iphone'].indexOf(c) >= 0) return 'gadgets';
   if (c === 'Транспорт' && !/страховк|замена масла/.test(n)) return 'car';
