@@ -122,6 +122,10 @@ function poll() {
   if (!lock.tryLock(1000)) return;
   try {
     if (P('RULES') !== RULES_VERSION) resetData(true);
+    if (Date.now() - (+P('LAST_CLEAN') || 0) > 7 * 864e5) {
+      const n = cleanupExports();
+      if (n) send(`🧹 Убрал в корзину ${n} старых экспортов MoneyLover. Оставил годовой и последний за каждый месяц.`);
+    }
     let offset = +P('OFFSET') || 0;
     const r = tg('getUpdates', { offset, timeout: 0, limit: 20, allowed_updates: ['message', 'callback_query'] });
     if (!r.ok) { console.error('getUpdates: ' + JSON.stringify(r)); return; }
@@ -165,6 +169,7 @@ function handle(u) {
   if (/^\/limit\s+/.test(text)) return setLimit(text);
   if (/^\/undo/.test(text)) return undo();
   if (/^\/reset/.test(text)) return resetData(true);
+  if (/^\/clean/.test(text)) { const n = cleanupExports(); return send(n ? `🧹 Убрал в корзину ${n} старых экспортов MoneyLover.` : 'Лишних экспортов нет 👍'); }
   if (/^\/import|^📥/.test(text)) { send('⏳ Забираю экспорт MoneyLover с Диска…'); const r = importMoneyLover(); return send(r.found ? r.text : 'Сегодняшний экспорт MoneyLover на Диске не найден.'); }
   if (/^\/month/.test(text)) return send(monthText(new Date()));
   if (/^\/expenses|^📈/.test(text)) { send('⏳ Считаю расходы за 3 месяца…'); return [].concat(expensesText()).forEach((m) => send(m)); }
@@ -189,7 +194,7 @@ function help() {
     '<b>150000 обед</b> — проверить покупку\n' +
     '/today — сегодня\n/week — неделя\n/wish — список желаний\n' +
     '/limits — лимиты\n/limit cafe 400000 — изменить лимит\n' +
-    '/import — забрать экспорт MoneyLover сейчас\n/month — итог месяца по плану\n/expenses — расходы за 3 месяца\n/income — доходы за 3 месяца\n\n' +
+    '/import — забрать экспорт MoneyLover сейчас\n/clean — убрать старые экспорты в корзину\n/reset — пересчитать всё заново\n/month — итог месяца по плану\n/expenses — расходы за 3 месяца\n/income — доходы за 3 месяца\n\n' +
     'Ключи категорий: ' + Object.keys(CATS).map((c) => `${c} — ${CATS[c]}`).join(', '));
 }
 
@@ -614,6 +619,38 @@ function allExports() {
   while (it.hasNext()) EXPORT_LIST.push(it.next());
   return EXPORT_LIST;
 }
+/**
+ * Убирает в корзину лишние экспорты MoneyLover. Оставляет:
+ *  - экспорты за длинный период (больше месяца, например годовой) — из них считается история;
+ *  - самый свежий файл для каждого периода (например, последний за октябрь).
+ * Файлы из корзины Google Диска можно восстановить в течение 30 дней.
+ */
+function cleanupExports() {
+  props().setProperty('LAST_CLEAN', String(Date.now()));
+  const newest = {};
+  const files = allExports();
+  files.forEach((f) => {
+    const r = f.getName().match(/(\d{2}\/\d{2}\/\d{4})-(\d{2}\/\d{2}\/\d{4})/);
+    if (!r) return;
+    const k = r[1] + '-' + r[2];
+    // «Итого» (все кошельки) важнее «Пластика» за тот же период, дальше — самый свежий
+    const rank = (x) => (/Итого/.test(x.getName()) ? 1e15 : 0) + x.getDateCreated().getTime();
+    if (!newest[k] || rank(f) > rank(newest[k])) newest[k] = f;
+  });
+  let trashed = 0;
+  files.forEach((f) => {
+    const r = f.getName().match(/(\d{2})\/(\d{2})\/(\d{4})-(\d{2})\/(\d{2})\/(\d{4})/);
+    if (!r) return;
+    const from = new Date(+r[3], +r[2] - 1, +r[1]), to = new Date(+r[6], +r[5] - 1, +r[4]);
+    if ((to - from) / 864e5 > 35) return; // длинный период — оставляем
+    if (newest[r[0]] === f) return; // самый свежий за этот период — оставляем
+    if (Date.now() - f.getDateCreated().getTime() < 864e5) return; // сегодняшние не трогаем
+    try { f.setTrashed(true); trashed++; } catch (e) { console.error(e); }
+  });
+  EXPORT_LIST = null;
+  return trashed;
+}
+
 function findExportForMonth(first, last) {
   let best = null;
   allExports().forEach((f) => {
