@@ -49,7 +49,7 @@ function foodGroup(note) {
 const CAFE_CATS = ['Кафе', 'Ресторан', 'Рестораны', 'Кафе и рестораны', 'Алкоголь', 'Пиво', 'Фастфуд'];
 const CAFE_RE = /пив|водк|шашлык|бургер|ужин|обед|норин|калла|лаваш|сомса|safia|evos|евос|kfc|kfs|торт|сигар|кафе|ресторан/i;
 const KEYBOARD = {
-  keyboard: [[{ text: '📊 Сегодня' }, { text: '📅 Неделя' }], [{ text: '🛍 Список желаний' }, { text: '⚙️ Лимиты' }], [{ text: '📈 Расходы' }, { text: '💰 Доходы' }], [{ text: '📥 Импорт MoneyLover' }]],
+  keyboard: [[{ text: '📊 Сегодня' }, { text: '📅 Неделя' }], [{ text: '🛍 Список желаний' }, { text: '⚙️ Лимиты' }], [{ text: '📈 Расходы' }, { text: '💰 Доходы' }], [{ text: '📥 Импорт MoneyLover' }, { text: '✏️ Изменить лимит' }]],
   resize_keyboard: true,
   is_persistent: true,
 };
@@ -182,6 +182,7 @@ function handle(u) {
   if (/^\/week|^📅/.test(text)) return send(weekText(false));
   if (/^\/wish|^🛍/.test(text)) return showWish();
   if (/^\/limits|^⚙️/.test(text)) return showLimits();
+  if (/^✏️/.test(text)) return chooseLimit();
   if (/^\/limit\s+/.test(text)) return setLimit(text);
   if (/^\/undo/.test(text)) return undo();
   if (/^\/reset/.test(text)) return resetData(true);
@@ -191,6 +192,13 @@ function handle(u) {
   if (/^\/expenses|^📈/.test(text)) { send('⏳ Считаю расходы за 3 месяца…'); return [].concat(expensesText()).forEach((m) => send(m)); }
   if (/^\/income|^💰/.test(text)) { send('⏳ Считаю доходы за 3 месяца…'); return send(incomeText()); }
 
+  const editing = CacheService.getScriptCache().get('editLimit');
+  if (editing && true) {
+    CacheService.getScriptCache().remove('editLimit');
+    const v = parseAmount(text);
+    if (!v) return send('Не понял сумму. Нажмите ✏️ Изменить лимит ещё раз.');
+    return saveLimit(editing, v.a);
+  }
   const parsed = parseAmount(text);
   if (!parsed) return send('Напишите сумму и, по желанию, что покупаете. Например: <b>150000 обед</b> или <b>1,2 млн наушники</b>. /help — все команды.');
   const draft = { a: parsed.a, n: parsed.note, c: guessCat(parsed.note) };
@@ -209,7 +217,7 @@ function help() {
   send('<b>Команды</b>\n' +
     '<b>150000 обед</b> — проверить покупку\n' +
     '/today — сегодня\n/week — неделя\n/wish — список желаний\n' +
-    '/limits — лимиты\n/limit cafe 400000 — изменить лимит\n' +
+    '/limits — лимиты\n✏️ Изменить лимит — кнопка в меню\n' +
     '/import — забрать экспорт MoneyLover сейчас\n/clean — убрать старые экспорты в корзину\n/reset — пересчитать всё заново\n/month — итог месяца по плану\n/expenses — расходы за 3 месяца\n/income — доходы за 3 месяца\n\n' +
     'Ключи категорий: ' + Object.keys(CATS).map((c) => `${c} — ${CATS[c]}`).join(', '));
 }
@@ -401,6 +409,17 @@ function onCallback(cb) {
     deleteRow('Wish', data.slice(3));
     return send('Удалил из списка желаний. Это и есть экономия 💰');
   }
+  if (data.indexOf('el:') === 0) {
+    const c = data.slice(3);
+    if (!CATS[c]) return;
+    CacheService.getScriptCache().put('editLimit', c, 600);
+    return send(`«${CATS[c]}» сейчас: <b>${k(limits()[c])}</b> ${perLabel(c)}.\nНапишите новую сумму, например <b>900000</b> или <b>1,2 млн</b>.`,
+      { inline_keyboard: [[{ text: 'Отмена', callback_data: 'elx' }]] });
+  }
+  if (data === 'elx') {
+    CacheService.getScriptCache().remove('editLimit');
+    return send('Лимит не изменён.');
+  }
   if (data.indexOf('ul:') === 0) {
     deleteRow('Log', data.slice(3));
     return send('Запись удалена.');
@@ -449,16 +468,26 @@ function showWish() {
 }
 function showLimits() {
   const L = limits();
-  send('<b>Лимиты</b>\n' + Object.keys(CATS).map((c) => `${CATS[c]} (${c}): ${k(L[c])} ${perLabel(c)}`).join('\n') +
-    '\n\nИзменить: <b>/limit cafe 400000</b>');
+  send('<b>Лимиты</b>\n' + Object.keys(CATS).map((c) => `${CATS[c]}: ${k(L[c])} ${perLabel(c)}`).join('\n') +
+    '\n\nИзменить — кнопка <b>✏️ Изменить лимит</b>.');
 }
 function setLimit(text) {
   const m = text.match(/^\/limit\s+(\w+)\s+([\d\s]+)/);
   if (!m || !CATS[m[1]]) return send('Формат: <b>/limit cafe 400000</b>. Ключи: ' + Object.keys(CATS).join(', '));
+  saveLimit(m[1], +m[2].replace(/\s/g, ''));
+}
+function saveLimit(c, v) {
   const L = JSON.parse(P('LIMITS') || '{}');
-  L[m[1]] = +m[2].replace(/\s/g, '');
+  L[c] = v;
   props().setProperty('LIMITS', JSON.stringify(L));
+  send(`✅ Лимит «${CATS[c]}»: <b>${k(v)}</b> ${perLabel(c)}.`);
   showLimits();
+}
+/** Кнопки выбора лимита для изменения. */
+function chooseLimit() {
+  const L = limits();
+  const rows = Object.keys(CATS).map((c) => [{ text: `${CATS[c]} · ${k(L[c])}${perShort(c)}`, callback_data: 'el:' + c }]);
+  send('Какой лимит изменить?', { inline_keyboard: rows });
 }
 function undo() {
   const log = readLog().filter((e) => !e.src);
