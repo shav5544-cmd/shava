@@ -17,7 +17,7 @@ const CATS = {
   perfume: 'Духи',
   cash: 'Снятие наличных',
 };
-const DEFAULT_LIMITS = { cafe: 800000, market: 380000, other: 250000, family: 1500000, clothes: 2500000, gadgets: 600000, subs: 500000, perfume: 600000, cash: 4000000 };
+const DEFAULT_LIMITS = { cafe: 800000, market: 380000, other: 250000, family: 1500000, clothes: 2500000, gadgets: 600000, subs: 500000, perfume: 1000000, cash: 4000000 };
 // Период лимита: m — месяц, m2 — два месяца (янв–фев, мар–апр, …). Остальные — неделя.
 const PERIOD = { family: 'm', clothes: 'm', gadgets: 'm', subs: 'm', cash: 'm', perfume: 'm2' };
 const BIG = 500000; // от этой суммы — правило 48 часов
