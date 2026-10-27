@@ -7,14 +7,19 @@
 
 // ===== Настройки =====
 const CATS = {
-  cafe: 'Питание и кафе',
-  clothes: 'Одежда',
+  cafe: 'Питание',
   market: 'Маркетплейсы',
-  misc: 'Гаджеты, духи, перекусы',
-  cash: 'Прочее / наличные',
+  other: 'Прочее',
+  family: 'Ужин с семьёй',
+  clothes: 'Одежда',
+  gadgets: 'Гаджеты и вещи',
+  subs: 'Подписки',
+  perfume: 'Духи',
+  cash: 'Снятие наличных',
 };
-const DEFAULT_LIMITS = { cafe: 600000, clothes: 2500000, market: 380000, misc: 150000, cash: 460000 };
-const MONTHLY = ['clothes']; // лимит на месяц, остальные — на неделю
+const DEFAULT_LIMITS = { cafe: 800000, market: 380000, other: 250000, family: 1500000, clothes: 2500000, gadgets: 600000, subs: 500000, perfume: 600000, cash: 4000000 };
+// Период лимита: m — месяц, m2 — два месяца (янв–фев, мар–апр, …). Остальные — неделя.
+const PERIOD = { family: 'm', clothes: 'm', gadgets: 'm', subs: 'm', cash: 'm', perfume: 'm2' };
 const BIG = 500000; // от этой суммы — правило 48 часов
 const WAIT_H = 48;
 const EXPENSES = 47.6; // средние расходы в месяц, млн (база плана)
@@ -28,17 +33,18 @@ const PLAN = [
 ];
 
 // «Питание» делим по примечаниям на группы. Пустое примечание — обед.
-const RULES_VERSION = '2026-10-19-food'; // при смене правил бот пересчитывает всё заново
+const RULES_VERSION = '2026-10-27-limits'; // при смене правил бот пересчитывает всё заново
 function foodGroup(note) {
   const n = String(note || '').toLowerCase().trim();
   if (!n) return 'Обед';
+  if (/семь|оила/.test(n)) return 'Ужин с семьёй';
   if (/пив|водк|вино|коньяк|виски|алко|шампан/.test(n)) return 'Алкоголь';
   if (/сигар|iqos|айкос|вейп|табак/.test(n)) return 'Сигареты';
   if (/гушт|мяс|уйга|домой|продукт|бозор|базар|курица|тову?қ/.test(n)) return 'Домой';
   if (/торт|шоколад|конфет|сладк|десерт|морожен/.test(n)) return 'Сладкое';
   return 'Кафе/еда';
 }
-// Всё «Питание» входит в недельный лимит «Питание и кафе».
+// «Питание» — недельный лимит, кроме ужинов с семьёй: у них свой лимит на месяц.
 // Отдельные категории MoneyLover, которые сразу считаются «Кафе и алкоголь»
 const CAFE_CATS = ['Кафе', 'Ресторан', 'Рестораны', 'Кафе и рестораны', 'Алкоголь', 'Пиво', 'Фастфуд'];
 const CAFE_RE = /пив|водк|шашлык|бургер|ужин|обед|норин|калла|лаваш|сомса|safia|evos|евос|kfc|kfs|торт|сигар|кафе|ресторан/i;
@@ -53,7 +59,17 @@ const props = () => PropertiesService.getScriptProperties();
 const P = (k) => props().getProperty(k);
 const owner = () => P('OWNER_CHAT_ID');
 const limits = () => Object.assign({}, DEFAULT_LIMITS, JSON.parse(P('LIMITS') || '{}'));
-const isM = (c) => MONTHLY.indexOf(c) >= 0;
+const isM = (c) => !!PERIOD[c];
+const perLabel = (c) => (PERIOD[c] === 'm2' ? 'на 2 месяца' : PERIOD[c] ? 'в месяц' : 'в неделю');
+const perShort = (c) => (PERIOD[c] === 'm2' ? '/2 мес' : PERIOD[c] ? '/мес' : '/нед');
+/** Начало текущего периода лимита (для месячных и двухмесячных). */
+function periodStart(c, d) {
+  return PERIOD[c] === 'm2' ? new Date(d.getFullYear(), d.getMonth() - (d.getMonth() % 2), 1) : monthStart(d);
+}
+function nextPeriod(c, d) {
+  const s = periodStart(c, d);
+  return new Date(s.getFullYear(), s.getMonth() + (PERIOD[c] === 'm2' ? 2 : 1), 1);
+}
 
 function fmt(v) {
   return Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
@@ -121,7 +137,7 @@ function poll() {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(1000)) return;
   try {
-    if (P('RULES') !== RULES_VERSION) resetData(true);
+    if (P('RULES') !== RULES_VERSION) { props().deleteProperty('LIMITS'); resetData(true); }
     if (Date.now() - (+P('LAST_CLEAN') || 0) > 7 * 864e5) {
       const n = cleanupExports();
       if (n) send(`🧹 Убрал в корзину ${n} старых экспортов MoneyLover. Оставил годовой и последний за каждый месяц.`);
@@ -215,11 +231,15 @@ function parseAmount(text) {
 function guessCat(note) {
   const s = (note || '').toLowerCase();
   if (!s) return null;
-  if (CAFE_RE.test(s)) return 'cafe';
+  if (/семь|оила/.test(s)) return 'family';
+  if (/дух|парфюм/.test(s)) return 'perfume';
+  if (CAFE_RE.test(s) || /перекус|кофе|шоколад/.test(s)) return 'cafe';
   if (/uzum|узум|wb|wildberries|pinduoduo|маркет|озон|ozon/.test(s)) return 'market';
   if (/одежд|кийим|обув|куртк|штан|платье|футболк|костюм/.test(s)) return 'clothes';
-  if (/дух|парфюм|наушник|часы|гаджет|чехол|телефон|airpods|перекус|кофе|шоколад/.test(s)) return 'misc';
-  if (/такси|налич|кино|развлеч|подарок/.test(s)) return 'cash';
+  if (/подписк|apple|icloud|telegram|телеграм|claude|vpn/.test(s)) return 'subs';
+  if (/наушник|часы|гаджет|чехол|телефон|airpods|сумк/.test(s)) return 'gadgets';
+  if (/налич|снять|банкомат/.test(s)) return 'cash';
+  if (/такси|кино|развлеч|подарок|быт/.test(s)) return 'other';
   return null;
 }
 function saveDraft(d) { CacheService.getScriptCache().put('draft', JSON.stringify(d), 3600); }
@@ -227,7 +247,7 @@ function getDraft() { return JSON.parse(CacheService.getScriptCache().get('draft
 
 function askCategory(d) {
   const C = calc();
-  const rows = Object.keys(CATS).map((c) => [{ text: `${CATS[c]} · ${k(C.catLeft(c))}${isM(c) ? '/мес' : ''}`, callback_data: 'c:' + c }]);
+  const rows = Object.keys(CATS).map((c) => [{ text: `${CATS[c]} · ${k(C.catLeft(c))}${perShort(c)}`, callback_data: 'c:' + c }]);
   send(`Сумма <b>${fmt(d.a)}</b> сум${d.n ? ' — ' + esc(d.n) : ''}. Какая категория?`, { inline_keyboard: rows });
 }
 
@@ -278,9 +298,9 @@ function calc(now) {
   const inW = log.filter((e) => e.t >= ws), inD = log.filter((e) => e.t >= ds), inM = log.filter((e) => e.t >= ms);
   const spentW = inW.reduce((s, e) => s + wa(e), 0), spentD = inD.reduce((s, e) => s + wa(e), 0);
   const byW = {}, byM = {};
-  Object.keys(CATS).forEach((c) => { byW[c] = 0; byM[c] = 0; });
+  Object.keys(CATS).forEach((c) => { byW[c] = 0; byM[c] = isM(c) ? prevPart(c, now) : 0; });
   inW.forEach((e) => { byW[e.c] = (byW[e.c] || 0) + e.a; });
-  inM.forEach((e) => { byM[e.c] = (byM[e.c] || 0) + e.a; });
+  log.forEach((e) => { if (isM(e.c) && e.t >= periodStart(e.c, now)) byM[e.c] += e.a; }); // byM — за период лимита
   const daysLeft = 7 - ((now.getDay() + 6) % 7);
   const leftW = weekLimit - spentW;
   const todayAllow = Math.max(0, (weekLimit - (spentW - spentD)) / daysLeft - spentD);
@@ -289,14 +309,41 @@ function calc(now) {
   const nextM = new Date(now.getFullYear(), now.getMonth() + 1, 1);
   return { now, L, log, inW, inD, inM, spentW, spentD, byW, byM, daysLeft, leftW, todayAllow, catLeft, weekLimit, nextMon, nextM };
 }
+/**
+ * Траты двухмесячного лимита в прошлом месяце (если период начался в прошлом месяце).
+ * Экспорт MoneyLover — за текущий месяц, поэтому прошлый берём из итогов месяца (лист История).
+ */
+const PREV_MEMO = {};
+function prevPart(c, now) {
+  const ps = periodStart(c, now), ms = monthStart(now);
+  if (ps >= ms) return 0;
+  const key = c + ym(ps);
+  if (PREV_MEMO[key] === undefined) {
+    let sum = 0;
+    try {
+      const t = monthTotals(ps);
+      if (t && c === 'perfume') Object.keys(t.exp).forEach((cat) => Object.keys(t.exp[cat].notes).forEach((n) => { if (/дух/i.test(n)) sum += t.exp[cat].notes[n]; }));
+    } catch (e) { console.error(e); }
+    PREV_MEMO[key] = sum;
+  }
+  return PREV_MEMO[key];
+}
+/** Строки по лимитам на месяц / 2 месяца: сколько осталось. */
+function periodLines(C) {
+  return Object.keys(CATS).filter(isM).map((c) => {
+    const left = C.catLeft(c);
+    return `${left < 0 ? '🔴' : left < C.L[c] * 0.2 ? '🟡' : '🟢'} ${CATS[c]}: ${left < 0 ? 'перерасход ' + k(-left) : 'осталось ' + k(left)} из ${k(C.L[c])} ${perLabel(c)}`;
+  }).join('\n');
+}
 
 function judge(a, c, wish) {
   const C = calc(), left = C.catLeft(c);
   if (isM(c)) {
-    if (a <= left) return { kind: '✅ Можно', p: [`Лимит «${CATS[c]}» на месяц: после покупки останется ${k(left - a)}.`], acts: ['buy', 'no'] };
+    const np = nextPeriod(c, C.now), per = PERIOD[c] === 'm2' ? 'за эти 2 месяца' : 'в этом месяце';
+    if (a <= left) return { kind: '✅ Можно', p: [`Лимит «${CATS[c]}» ${perLabel(c)}: после покупки останется ${k(left - a)}.`], acts: ['buy', 'no'] };
     const over = a - Math.max(0, left);
-    if (over <= C.leftW) return { kind: '⚠️ Можно, но…', p: [`Месячный лимит «${CATS[c]}» ${left > 0 ? 'остаётся только ' + k(left) : 'уже исчерпан'}. Перерасход ${k(over)} возьмётся из недельного лимита.`, `На другие траты до конца недели останется ${k(Math.max(0, C.leftW - over))}.`], acts: ['buy', 'no'], over };
-    return { kind: '❌ Нет', p: [`На одежду в этом месяце осталось ${k(Math.max(0, left))}, а покупка — ${k(a)}.`, `Новый лимит — с ${C.nextM.getDate()} ${MON[C.nextM.getMonth()]}. Можно разделить покупку на два месяца.`], acts: ['wish', 'no'] };
+    if (over <= C.leftW) return { kind: '⚠️ Можно, но…', p: [`Лимит «${CATS[c]}» ${left > 0 ? 'почти кончился: осталось ' + k(left) : 'уже исчерпан'}. Перерасход ${k(over)} возьмётся из недельного лимита.`, `На другие траты до конца недели останется ${k(Math.max(0, C.leftW - over))}.`], acts: ['buy', 'no'], over };
+    return { kind: '❌ Нет', p: [`На «${CATS[c]}» ${per} осталось ${k(Math.max(0, left))}, а покупка — ${k(a)}.`, `Новый лимит — с ${np.getDate()} ${MON[np.getMonth()]}.`], acts: ['wish', 'no'] };
   }
   const matured = wish && Date.now() - wish.t.getTime() >= WAIT_H * 36e5;
   const after = C.leftW - a, perDay = C.daysLeft > 1 ? after / (C.daysLeft - 1) : after;
@@ -372,8 +419,8 @@ function todayText() {
   const list = C.inD.map((e) => `• ${esc(e.n || CATS[e.c])} — ${k(e.a)}`).join('\n');
   return `<b>Сегодня, ${dayLabel(C.now)}</b>\nМожно ещё: <b>${k(C.todayAllow)}</b>\n` +
     `Неделя: осталось ${k(C.leftW)} из ${k(C.weekLimit)}, дней: ${C.daysLeft}\n` +
-    `Одежда: на месяц осталось ${k(C.catLeft('clothes'))}\n\n` +
-    (list ? `Траты сегодня (${k(C.spentD)}):\n${list}` : 'Сегодня гибких трат в MoneyLover ещё нет.') + '\n\n<i>' + lastImportLine() + '</i>';
+    periodLines(C) + '\n\n' +
+    (list ? `Траты сегодня (${k(C.inD.reduce((a, e) => a + e.a, 0))}):\n${list}` : 'Сегодня гибких трат в MoneyLover ещё нет.') + '\n\n<i>' + lastImportLine() + '</i>';
 }
 function weekText(final) {
   const C = calc();
@@ -385,7 +432,7 @@ function weekText(final) {
   const wish = readWish().filter((w) => Date.now() - w.t.getTime() >= WAIT_H * 36e5);
   let t = `<b>${final ? 'Итог недели' : 'Неделя'}</b>\nПотрачено ${k(C.spentW)} из ${k(C.weekLimit)}` +
     (final ? (C.leftW >= 0 ? ` — в копилку ${k(C.leftW)} 💰` : ` — перерасход ${k(-C.leftW)}`) : `, осталось ${k(C.leftW)}`) +
-    `\n\n${cats}\n👕 Одежда за месяц: ${k(C.byM.clothes)} из ${k(C.L.clothes)}`;
+    `\n\n${cats}\n\n<b>Лимиты на месяц:</b>\n${periodLines(C)}`;
   if (top) t += `\n\nКрупные траты:\n${top}`;
   if (wish.length) t += `\n\n🛍 Можно решать: ${wish.map((w) => esc(w.n || CATS[w.c]) + ' (' + k(w.a) + ')').join(', ')}`;
   if (final && !C.inW.length) t += '\n\nЗаписей за неделю нет. Выгружайте MoneyLover вечером — я внесу траты сам.';
@@ -402,7 +449,7 @@ function showWish() {
 }
 function showLimits() {
   const L = limits();
-  send('<b>Лимиты</b>\n' + Object.keys(CATS).map((c) => `${CATS[c]} (${c}): ${k(L[c])} ${isM(c) ? 'в месяц' : 'в неделю'}`).join('\n') +
+  send('<b>Лимиты</b>\n' + Object.keys(CATS).map((c) => `${CATS[c]} (${c}): ${k(L[c])} ${perLabel(c)}`).join('\n') +
     '\n\nИзменить: <b>/limit cafe 400000</b>');
 }
 function setLimit(text) {
@@ -453,11 +500,8 @@ function readExportAllRaw(file) {
   const h = v[0];
   const col = (name) => h.findIndex((x) => String(x).indexOf(name) === 0);
   const iD = col('Дата'), iC = col('Категория'), iS = col('Сумма'), iN = col('Примечание'), iX = col('Исключить'), iW = col('Кошел');
-  // Экспорт «Итого» — все кошельки. Если есть кошелёк «Наличка», снятие наличных с карты (категория «Наличка»)
-  // — это перевод в кошелёк, а сами траты наличными записаны в нём. Не считаем снятие дважды.
-  const wallets = {};
-  if (iW >= 0) v.slice(1).forEach((r) => { wallets[String(r[iW]).trim()] = 1; });
-  const skipCashOut = Object.keys(wallets).length > 1 && wallets['Наличка'];
+  // Экспорт «Итого» — все кошельки. Снятие наличных с карты (категория «Наличка») считаем расходом,
+  // а траты из кошелька «Наличка» — отдельно, только для справки (иначе деньги посчитаются дважды).
   return v.slice(1).map((r, i) => {
     const rd = raw[i + 1][iD], rs = raw[i + 1][iS];
     let d = null;
@@ -468,16 +512,21 @@ function readExportAllRaw(file) {
     }
     const s = typeof rs === 'number' ? rs : parseFloat(String(rs).replace(/[\s ]/g, '').replace('−', '-').replace(',', '.'));
     const cat = String(r[iC]).trim();
-    return d ? { d, ds: Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd/MM/yyyy'), cat, s, note: String(r[iN] || '').trim(), wallet: iW >= 0 ? String(r[iW]).trim() : '', excl: (iX >= 0 && String(r[iX]).trim() !== '') || (skipCashOut && cat === 'Наличка') } : null;
+    return d ? { d, ds: Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd/MM/yyyy'), cat, s, note: String(r[iN] || '').trim(), wallet: iW >= 0 ? String(r[iW]).trim() : '', cashWallet: iW >= 0 && String(r[iW]).trim() === 'Наличка', excl: iX >= 0 && String(r[iX]).trim() !== '' } : null;
   }).filter((r) => r && !r.excl && isFinite(r.s));
 }
 function flexCat(r) {
+  if (r.cashWallet) return null; // траты из кошелька «Наличка» уже посчитаны снятием наличных
   const n = r.note.toLowerCase(), c = r.cat;
+  if (n.indexOf('дух') >= 0 && c !== 'Питание') return 'perfume';
+  if (c === 'Наличка') return 'cash';
   if (c === 'Кийим') return 'clothes';
   if (['Uzum', 'Pinduoduo', 'Wb'].indexOf(c) >= 0) return 'market';
-  if (CAFE_CATS.indexOf(c) >= 0 || c === 'Питание') return 'cafe';
-  if (['Личные предметы', 'Iphone', 'Apple', 'Steam Игры', 'Meta Quest', 'Телеграмм'].indexOf(c) >= 0 || n.indexOf('дух') >= 0) return 'misc';
-  if (['Наличка', 'Такси', 'Развлечения', 'Прочие расходы', 'Предметы быта', 'Домашние расходы'].indexOf(c) >= 0) return 'cash';
+  if (CAFE_CATS.indexOf(c) >= 0 || c === 'Питание') return foodGroup(r.note) === 'Ужин с семьёй' ? 'family' : 'cafe';
+  if (['Apple', 'Телеграмм', 'Steam Игры', 'Meta Quest'].indexOf(c) >= 0) return 'subs';
+  if (c === 'Другие счета' && /claude|sider|\bии\b|\bai\b|vpn|подписк/.test(n)) return 'subs';
+  if (['Личные предметы', 'Iphone'].indexOf(c) >= 0) return 'gadgets';
+  if (['Такси', 'Развлечения', 'Прочие расходы', 'Предметы быта', 'Домашние расходы'].indexOf(c) >= 0) return 'other';
   return null;
 }
 
@@ -498,11 +547,13 @@ function importMoneyLover(anyRecent) {
   const file = findExport(anyRecent ? new Date(now.getTime() - 40 * 864e5) : today, today);
   if (!file) return { found: false };
   const rows = readExport(file);
-  const from = new Date(Math.min(monthStart(now).getTime(), today.getTime() - 6 * 864e5)); // весь месяц — чтобы лимит одежды считался верно
+  const from = new Date(Math.min(monthStart(now).getTime(), today.getTime() - 6 * 864e5)); // весь месяц — для месячных лимитов
   const log = readLog(), keys = {}, seen = {};
   log.forEach((e) => { if (e.key) keys[e.key] = 1; });
   const L = limits();
-  let clothesM = log.filter((e) => e.c === 'clothes' && e.t >= monthStart(now)).reduce((s, e) => s + e.a, 0);
+  // сколько уже потрачено в текущем периоде месячных лимитов — чтобы отметить перерасход
+  const run = {};
+  Object.keys(PERIOD).forEach((c) => { run[c] = prevPart(c, now) + log.filter((e) => e.c === c && e.t >= periodStart(c, now)).reduce((s, e) => s + e.a, 0); });
   const added = [];
   rows.filter((r) => r.d >= from && r.d <= now).forEach((r) => {
     const c = flexCat(r);
@@ -513,10 +564,10 @@ function importMoneyLover(anyRecent) {
     if (keys[key]) return;
     // ручная запись в боте того же дня и на ту же сумму — это та же трата (категории могут отличаться)
     let ov = 0;
-    if (c === 'clothes') {
-      const was = Math.max(0, clothesM - L.clothes);
-      clothesM += r.a;
-      ov = Math.max(0, clothesM - L.clothes) - was;
+    if (isM(c) && r.d >= periodStart(c, now)) {
+      const was = Math.max(0, run[c] - L[c]);
+      run[c] += r.a;
+      ov = Math.max(0, run[c] - L[c]) - was;
     }
     const t = new Date(r.d); t.setHours(20, 0, 0, 0);
     const e = { id: 'ml' + uid(), t, a: r.a, c, n: r.note || r.cat, src: 'ml', key, ov };
@@ -530,10 +581,9 @@ function importMoneyLover(anyRecent) {
   const todayAdded = added.filter((e) => e.t >= today);
   const warn = Object.keys(CATS).filter((c) => C.catLeft(c) < 0).map((c) => `⚠️ ${CATS[c]}: превышение ${k(-C.catLeft(c))}`);
   const text = `<b>Итог дня, ${dayLabel(now)}</b>\n` +
-    `Гибкие траты сегодня: ${k(C.spentD)}${todayAdded.length ? ' (' + todayAdded.map((e) => esc(e.n) + ' ' + k(e.a)).join(', ') + ')' : ''}\n` +
+    `Траты сегодня: ${k(todayAdded.reduce((a, e) => a + e.a, 0))}${todayAdded.length ? ' (' + todayAdded.map((e) => esc(e.n) + ' ' + k(e.a)).join(', ') + ')' : ''}\n` +
     `Неделя: осталось ${k(C.leftW)} из ${k(C.weekLimit)}${C.daysLeft > 1 ? ' — ' + k(Math.max(0, C.leftW) / (C.daysLeft - 1)) + ' в день до воскресенья' : ''}\n` +
-    `Одежда: на месяц осталось ${k(C.catLeft('clothes'))}` +
-    (warn.length ? '\n' + warn[0] : '') +
+    (warn.length ? '\n' + warn.join('\n') : '') +
     (added.length ? `\n\nДобавлено записей: ${added.length}` : '');
   props().setProperty('LAST_IMPORT', String(Date.now()));
   return { found: true, text, added: added.length };
@@ -541,6 +591,7 @@ function importMoneyLover(anyRecent) {
 
 /** Итог прошлого месяца по 13 статьям плана экономии. */
 function planKey(r) {
+  if (r.cashWallet) return null;
   const n = r.note.toLowerCase(), c = r.cat;
   if (n.indexOf('дух') >= 0) return 'perfume';
   if (c === 'Стоянка' || /парков|стоянк/.test(n)) return 'park';
@@ -601,7 +652,7 @@ const normNote = (n) => { n = String(n || '').trim().replace(/\s+/g, ' '); retur
 /** Суммы за период: {exp: {кат: {sum, notes: {прим: сумма}}}, inc: {...}} в сумах. */
 function totalsFromRows(rows, first, last) {
   const t = { exp: {}, inc: {} };
-  rows.filter((r) => r.d >= first && r.d <= last && r.s !== 0).forEach((r) => {
+  rows.filter((r) => r.d >= first && r.d <= last && r.s !== 0 && !r.cashWallet).forEach((r) => {
     const kind = r.s < 0 ? 'exp' : 'inc', a = Math.abs(r.s), c = r.cat || 'Без категории';
     const n = c === 'Питание' ? foodGroup(r.note) : normNote(r.note);
     const node = t[kind][c] || (t[kind][c] = { sum: 0, notes: {} });
@@ -806,7 +857,23 @@ function expensesText() {
     t += `\n\n<b>${cap(MON_N[now.getMonth()])} (идёт, 1–${days}):</b> уже ${mm(kindTotal(cur, 'exp'))} млн, из них погашение кредитов ${mm(loans(cur))} млн.` +
       `\nБез кредитов в том же темпе выйдет ~${mm(noLoans / days * dim)} млн за месяц (в ${MON_PREP[months[2].first.getMonth()]} — ${mm(prevNoLoans)} млн).`;
   }
+  t += cashWalletText(now);
   return parts.concat([t]);
+}
+/** Справка: на что ушли наличные (кошелёк «Наличка») в текущем месяце. В итоги не входит — там уже есть снятие. */
+function cashWalletText(now) {
+  const file = findExport(new Date(now.getTime() - 40 * 864e5), now);
+  if (!file) return '';
+  const ms = monthStart(now), rows = readExportAll(file).filter((r) => r.d >= ms && r.d <= now);
+  const out = rows.filter((r) => r.cashWallet && r.s < 0);
+  const took = rows.filter((r) => !r.cashWallet && r.cat === 'Наличка' && r.s < 0).reduce((a, r) => a - r.s, 0);
+  if (!out.length && !took) return '';
+  const spent = out.reduce((a, r) => a - r.s, 0);
+  const by = {};
+  out.forEach((r) => { const key = r.cat + (r.note ? ' · ' + r.note : ''); by[key] = (by[key] || 0) - r.s; });
+  const list = Object.keys(by).sort((a, b) => by[b] - by[a]).slice(0, 6).map((x) => `• ${esc(x)} — ${k(by[x])}`).join('\n');
+  return `\n\n<b>💵 Наличные в ${MON_PREP[now.getMonth()]}:</b> снято ${k(took)}, записано трат из кошелька «Наличка» ${k(spent)}` +
+    (took > spent ? ` (не записано ${k(took - spent)})` : '') + (list ? '\n' + list : '');
 }
 
 function incomeText() {
