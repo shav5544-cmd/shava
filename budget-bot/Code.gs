@@ -719,13 +719,13 @@ const noteSum = (t, kind, c, n) => (t[kind][c] && t[kind][c].notes[n]) || 0;
 
 /**
  * Таблица по категориям MoneyLover с примечаниями-подкатегориями.
- * cols — 3 закрытых месяца (+ текущий). Δ — последний закрытый к предыдущему.
+ * cols — 3 закрытых месяца (+ текущий). Δ — последний столбец (текущий месяц) к предыдущему.
  */
 function catTable(kind, closed, cur, extra) {
   const cols = cur ? closed.concat([cur]) : closed;
   const label = (s, sub) => pad(sub ? ' ·' + s : (SHORT[s] || s), LW);
   const head = pad(kind === 'exp' ? 'Категория' : 'Доход', LW) + cols.map((m) => lpad(MON_S[m.first.getMonth()] + (m.partial ? '*' : ''), 5)).join('') + lpad('Δ', 5);
-  const line = (lab, vals) => lab + vals.map((v) => lpad(m1(v), 5)).join('') + lpad(sgn(vals[2] - vals[1]), 5);
+  const line = (lab, vals) => lab + vals.map((v) => lpad(m1(v), 5)).join('') + lpad(sgn(vals[vals.length - 1] - vals[vals.length - 2]), 5);
   const cats = {};
   cols.forEach((m) => Object.keys(m.t[kind]).forEach((c) => { cats[c] = 1; }));
   const total4 = (c) => cols.reduce((a, m) => a + catSum(m.t, kind, c), 0);
@@ -759,15 +759,17 @@ function catTable(kind, closed, cur, extra) {
   blocks.push(curB);
   return blocks.map((b) => '<pre>' + esc(b.join('\n')) + '</pre>');
 }
+// Последний месяц (текущий, если он есть) сравниваем с каждым из прошлых.
 function changeLines(months, kind) {
-  const out = [];
-  for (let i = 1; i < 3; i++) {
-    const a = kindTotal(months[i].t, kind), b = kindTotal(months[i - 1].t, kind);
-    out.push(`• ${cap(MON_N[months[i].first.getMonth()])} к ${MON_DAT[months[i - 1].first.getMonth()]}: <b>${signed(a - b)} млн (${pctS(a, b)})</b>`);
+  const last = months[months.length - 1], a = kindTotal(last.t, kind), out = [];
+  for (let i = months.length - 2; i >= 0; i--) {
+    const b = kindTotal(months[i].t, kind);
+    out.push(`• ${cap(MON_N[last.first.getMonth()])}${last.partial ? '*' : ''} к ${MON_DAT[months[i].first.getMonth()]}: <b>${signed(a - b)} млн (${pctS(a, b)})</b>`);
   }
   return out.join('\n');
 }
 function moversText(months, kind) {
+  months = months.slice(-3);
   const b = months[1].t, a = months[2].t, cats = {};
   [a, b].forEach((t) => Object.keys(t[kind]).forEach((c) => { cats[c] = 1; }));
   const diffs = Object.keys(cats).map((c) => [c, catSum(a, kind, c) - catSum(b, kind, c), catSum(a, kind, c), catSum(b, kind, c)]);
@@ -785,7 +787,7 @@ function missingText(months) {
     '. Выгрузите на Диск экспорт за весь период (или за каждый из этих месяцев целиком) и нажмите кнопку ещё раз.' : '';
 }
 function footnote(now, cm, more) {
-  return `<i>млн сум; ${cm ? `${MON_S[now.getMonth()]}* — 1–${now.getDate()} число; ` : ''}Δ — последний полный месяц к предыдущему; «·» — примечания${more ? '; ' + more : ''}</i>`;
+  return `<i>млн сум; ${cm ? `${MON_S[now.getMonth()]}* — 1–${now.getDate()} число; ` : ''}Δ — ${cm ? MON_N[now.getMonth()] : 'последний месяц'} к ${MON_DAT[(now.getMonth() + (cm ? 11 : 10)) % 12]}; «·» — примечания${more ? '; ' + more : ''}</i>`;
 }
 
 function expensesText() {
@@ -795,7 +797,8 @@ function expensesText() {
   const now = new Date(), cm = curMonth(now), cur = cm && cm.t;
   const tb = catTable('exp', months, cm);
   const parts = tb.map((b, i) => (i ? '' : '<b>📈 Расходы по категориям MoneyLover</b>\n') + b);
-  let t = footnote(now, cm) + '\n\n<b>Изменение по месяцам:</b>\n' + changeLines(months, 'exp') + moversText(months, 'exp');
+  const all = cm ? months.concat([cm]) : months;
+  let t = footnote(now, cm) + '\n\n<b>Сравнение:</b>\n' + changeLines(all, 'exp') + moversText(all, 'exp');
   if (cur) {
     const a = months[2].t, days = now.getDate(), dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
     const loans = (x) => catSum(x, 'exp', 'Погашение');
@@ -825,7 +828,7 @@ function incomeText() {
   const best = months.slice().sort((x, y) => rest(y.t) - rest(x.t))[0];
   if (rest(best.t) > 0) notes.push(`🟢 Лучший остаток — ${MON_N[best.first.getMonth()]}: +${mm(rest(best.t))} млн`);
   let t = '<b>💰 Доходы по категориям MoneyLover</b>\n' + catTable('inc', months, cm, extra).join('\n') + footnote(now, cm) +
-    '\n\n<b>Изменение по месяцам:</b>\n' + changeLines(months, 'inc') + moversText(months, 'inc') +
+    '\n\n<b>Сравнение:</b>\n' + changeLines(cols, 'inc') + moversText(cols, 'inc') +
     (notes.length ? '\n\n' + notes.join('\n') : '');
   if (cur) t += `\n\n<b>${cap(MON_N[now.getMonth()])} (идёт):</b> пришло ${mm(kindTotal(cur, 'inc'))} млн, из них зарплата ${mm(catSum(cur, 'inc', 'Зарплата'))} млн.`;
   return t;
