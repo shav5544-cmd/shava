@@ -506,7 +506,7 @@ function findExport(since, coverDate) {
     const r = f.getName().match(/(\d{2})\/(\d{2})\/(\d{4})-(\d{2})\/(\d{2})\/(\d{4})/);
     if (r && coverDate) {
       const from = new Date(+r[3], +r[2] - 1, +r[1]), to = new Date(+r[6], +r[5] - 1, +r[4]);
-      if (coverDate < from || coverDate > to) continue;
+      if (dayStart(coverDate) < from || dayStart(coverDate) > to) continue; // сравниваем дни, а не время: 31-го в 10:00 экспорт «…-31/10» подходит
     }
     if (!best || f.getDateCreated() > best.getDateCreated()) best = f;
   }
